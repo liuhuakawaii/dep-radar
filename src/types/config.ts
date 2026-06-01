@@ -49,7 +49,7 @@ export interface ReplacementRule {
  * @example
  * ```ts
  * // dep-radar.config.ts
- * import { defineConfig } from 'dep-radar'
+ * import { defineConfig } from '@liuhuakawaii/dep-radar'
  *
  * export default defineConfig({
  *   budget: { totalGzip: 500 * 1024 },

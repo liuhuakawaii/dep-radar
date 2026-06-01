@@ -10,7 +10,7 @@ import type { DepRadarConfig } from './types/config.js'
 /**
  * 公开类型 re-export
  *
- * 外部用户可通过 `import type { DepRadarConfig } from 'dep-radar'` 引用。
+ * 外部用户可通过 `import type { DepRadarConfig } from '@liuhuakawaii/dep-radar'` 引用。
  */
 export type {
   DepRadarConfig,
@@ -37,7 +37,7 @@ export const VERSION = '0.1.0'
  * @example
  * ```ts
  * // dep-radar.config.ts
- * import { defineConfig } from 'dep-radar'
+ * import { defineConfig } from '@liuhuakawaii/dep-radar'
  *
  * export default defineConfig({
  *   budget: { totalGzip: 500 * 1024 },

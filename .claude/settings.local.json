@@ -7,7 +7,10 @@
       "Bash(pnpm build:*)",
       "Bash(node ./dist/cli.js --help)",
       "Bash(node ./dist/cli.js analyze --help)",
-      "WebFetch(domain:docs.npmjs.com)"
+      "WebFetch(domain:docs.npmjs.com)",
+      "WebSearch",
+      "Bash(npm view *)",
+      "Bash(npm pack *)"
     ]
   }
 }

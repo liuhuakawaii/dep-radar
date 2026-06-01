@@ -1,5 +1,5 @@
 {
-  "name": "dep-radar",
+  "name": "@liuhuakawaii/dep-radar",
   "version": "0.1.0",
   "description": "前端依赖雷达 — 一站式依赖分析与优化建议 CLI 工具",
   "type": "module",

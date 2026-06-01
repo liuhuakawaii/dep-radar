@@ -2,9 +2,26 @@
 
 > 前端依赖雷达 — 一站式依赖分析与优化建议 CLI 工具
 
+[![npm](https://img.shields.io/npm/v/@liuhuakawaii/dep-radar.svg)](https://www.npmjs.com/package/@liuhuakawaii/dep-radar)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node](https://img.shields.io/badge/node-%3E%3D18.17.0-brightgreen.svg)](https://nodejs.org)
 [![pnpm](https://img.shields.io/badge/pnpm-%3E%3D9-orange.svg)](https://pnpm.io)
+
+---
+
+## 安装
+
+```bash
+# 全局安装
+npm i -g @liuhuakawaii/dep-radar
+# 或
+pnpm add -g @liuhuakawaii/dep-radar
+
+# 直接运行（无需安装）
+npx @liuhuakawaii/dep-radar analyze
+```
+
+> npm 包名是 `@liuhuakawaii/dep-radar`，但 CLI 命令是 `dep-radar`。
 
 ---
 
@@ -133,7 +150,7 @@ export GITHUB_TOKEN="ghp_xxx"
 在项目根目录放 `dep-radar.config.ts`（或 `.dep-radarrc.json` 等）：
 
 ```ts
-import { defineConfig } from 'dep-radar'
+import { defineConfig } from '@liuhuakawaii/dep-radar'
 
 export default defineConfig({
   budget: {
