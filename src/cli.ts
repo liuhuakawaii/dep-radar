@@ -19,6 +19,7 @@
 import { Command } from 'commander'
 
 import { analyzeCommand } from './commands/analyze.js'
+import { compareCommand } from './commands/compare.js'
 import { optimizeCommand } from './commands/optimize.js'
 import { treeCommand } from './commands/tree.js'
 import { EXIT_CODES } from './utils/exitCode.js'
@@ -116,15 +117,18 @@ program
 
 program
   .command('compare')
-  .description('🚧 对比两次分析（待 Phase 3 实现）')
+  .description('对比两个项目的依赖差异（体积）')
   .argument('<pathA>', '基准项目路径')
   .argument('<pathB>', '对比项目路径')
-  .action(() => {
-    logger.warn(
-      'compare 命令将在 Phase 3 实现（依赖 analyze 完整链路 + diff 算法）',
-    )
-    process.exit(EXIT_CODES.OK)
-  })
+  .option('--include-dev', '同时比较 devDependencies', false)
+  .action(
+    async (pathA: string, pathB: string, options: Record<string, unknown>) => {
+      const exitCode = await compareCommand(pathA, pathB, {
+        includeDev: Boolean(options.includeDev),
+      })
+      process.exit(exitCode)
+    },
+  )
 
 program
   .command('report')
