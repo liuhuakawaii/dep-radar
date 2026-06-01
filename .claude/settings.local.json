@@ -6,7 +6,8 @@
       "Bash(pnpm test:*)",
       "Bash(pnpm build:*)",
       "Bash(node ./dist/cli.js --help)",
-      "Bash(node ./dist/cli.js analyze --help)"
+      "Bash(node ./dist/cli.js analyze --help)",
+      "WebFetch(domain:docs.npmjs.com)"
     ]
   }
 }
