@@ -37,7 +37,9 @@
 - [x] Step 8：配置文件加载（`src/config/loader.ts`，支持 `dep-radar.config.{ts,js,cjs,mjs,json}` / `.dep-radarrc.*` / `package.json` 字段）
 - [x] Step 9：CLI 框架 + analyze + tree 命令
 - [x] Step 11：依赖健康度 analyzer（npm + GitHub 集成，含 deprecated/TS 支持/下载趋势）
-- [ ] Step 12-13：许可证、优化建议 analyzer（Phase 2）
+- [x] Step 12：许可证合规 analyzer（SPDX 复合表达式 + 5 类风险评级）
+- [x] Step 13：优化建议 engine + `optimize` 命令（10 条内置替代规则，6 维度规则引擎）
+- [x] Step 14：HTML 报告（内联 CSS、CSS-only 图表、深色主题、离线可用）
 - [ ] Step 14：HTML 报告（Phase 2）
 - [ ] Step 15-17：安全审计、对比分析（Phase 3）
 
@@ -102,6 +104,15 @@ node ./dist/cli.js tree --depth 2
 
 # 分析依赖健康度（推荐先配 GITHUB_TOKEN 提升 GitHub API 配额）
 node ./dist/cli.js analyze --only health --format json --output health.json
+
+# 检查许可证合规
+node ./dist/cli.js analyze --only license
+
+# 跨维度聚合 + 生成优化建议（核心命令）
+node ./dist/cli.js optimize
+
+# 生成漂亮的 HTML 报告（离线可用，直接浏览器打开）
+node ./dist/cli.js optimize --format html --output report.html
 ```
 
 #### 配置 GITHUB_TOKEN（强烈推荐）
@@ -137,25 +148,44 @@ export default defineConfig({
 
 #### 已实现的 CLI 选项
 
-| 选项              | 说明                                                                         |
-| ----------------- | ---------------------------------------------------------------------------- |
-| `--format <type>` | `terminal`（默认） / `json`                                                  |
-| `--output <path>` | 写入文件                                                                     |
-| `--top <n>`       | 显示前 N 个体积大户（默认 10，仅 size 维度）                                 |
-| `--include-dev`   | 同时分析 `devDependencies`                                                   |
-| `--only <dim>`    | 维度选择：`size`（默认） / `health` / `license`（占位） / `security`（占位） |
-| `--verbose`       | 详细日志                                                                     |
-| `--silent`        | 静默模式                                                                     |
+**`analyze`**（单维度详查）
+
+| 选项              | 说明                                                       |
+| ----------------- | ---------------------------------------------------------- |
+| `--only <dim>`    | `size`（默认） / `health` / `license` / `security`（占位） |
+| `--format <type>` | `terminal`（默认） / `json` / `html`                       |
+| `--output <path>` | 写入文件                                                   |
+| `--top <n>`       | 显示前 N 个体积大户（默认 10，仅 size 维度）               |
+| `--include-dev`   | 同时分析 `devDependencies`                                 |
+
+**`optimize`**（跨维度聚合 + 生成可操作建议）
+
+| 选项              | 说明                                             |
+| ----------------- | ------------------------------------------------ |
+| `--format <type>` | `terminal`（默认） / `json` / `html`             |
+| `--output <path>` | 写入文件                                         |
+| `--include-dev`   | 同时分析 `devDependencies`                       |
+| `--skip-health`   | 跳过健康度维度（避免 GitHub API 调用，速度更快） |
+| `--skip-license`  | 跳过许可证维度                                   |
+
+**全局选项**
+
+| 选项         | 说明                                      |
+| ------------ | ----------------------------------------- |
+| `--verbose`  | 详细日志                                  |
+| `--silent`   | 静默模式                                  |
+| `--no-cache` | 禁用缓存（缓存层待 Phase 3 接入 data 层） |
+| `--registry` | 自定义 npm registry（待 data 层接入）     |
 
 #### CI 集成的退出码
 
-| 码  | 含义                 |
-| --- | -------------------- |
-| 0   | OK                   |
-| 1   | 通用错误             |
-| 2   | 体积超出 budget      |
-| 3   | 许可证冲突（待实现） |
-| 4   | 检测到漏洞（待实现） |
+| 码  | 含义                                                   |
+| --- | ------------------------------------------------------ |
+| 0   | OK                                                     |
+| 1   | 通用错误（IO/网络/配置）                               |
+| 2   | 发现高危/严重漏洞（待 Phase 3 接入 security analyzer） |
+| 3   | 体积超出 `budget`（`analyze --only size` 时）          |
+| 4   | 检测到高风险许可证冲突（`analyze --only license` 时）  |
 
 ---
 

@@ -10,9 +10,10 @@ process.env.FORCE_COLOR = '0'
 vi.mock('../data/pkg-size.js', () => ({ getPackageSize: vi.fn() }))
 vi.mock('../data/bundlephobia.js', () => ({ getPackageSize: vi.fn() }))
 
-// mock health 分析需要的 npm/github
+// mock health/license 分析需要的 npm/github
 vi.mock('../data/npm.js', () => ({
   getFullPackageInfo: vi.fn(),
+  getPackageInfo: vi.fn(),
   getDownloadCount: vi.fn(),
   getDownloadTrend: vi.fn(),
 }))
@@ -21,8 +22,12 @@ vi.mock('../data/github.js', () => ({
 }))
 
 const { getPackageSize } = await import('../data/pkg-size.js')
-const { getFullPackageInfo, getDownloadCount, getDownloadTrend } =
-  await import('../data/npm.js')
+const {
+  getFullPackageInfo,
+  getPackageInfo,
+  getDownloadCount,
+  getDownloadTrend,
+} = await import('../data/npm.js')
 const { getRepoInfo } = await import('../data/github.js')
 const { _resetGithubTokenWarnedForTests } =
   await import('./buildHealthFetcher.js')
@@ -31,6 +36,7 @@ const { EXIT_CODES } = await import('../utils/exitCode.js')
 
 const pkgSize = getPackageSize as unknown as ReturnType<typeof vi.fn>
 const npmFullDoc = getFullPackageInfo as unknown as ReturnType<typeof vi.fn>
+const npmInfo = getPackageInfo as unknown as ReturnType<typeof vi.fn>
 const npmDl = getDownloadCount as unknown as ReturnType<typeof vi.fn>
 const npmTrend = getDownloadTrend as unknown as ReturnType<typeof vi.fn>
 const ghRepo = getRepoInfo as unknown as ReturnType<typeof vi.fn>
@@ -41,6 +47,7 @@ describe('analyzeCommand', () => {
   beforeEach(() => {
     pkgSize.mockReset()
     npmFullDoc.mockReset()
+    npmInfo.mockReset()
     npmDl.mockReset()
     npmTrend.mockReset()
     ghRepo.mockReset()
@@ -288,13 +295,61 @@ describe('analyzeCommand', () => {
   })
 
   // -----------------------------------------------------------------
+  // license 维度
+  // -----------------------------------------------------------------
+
+  describe('--only license', () => {
+    it('全部 MIT → OK，无 conflict 文案', async () => {
+      writePkg({ react: '^18.0.0' })
+      npmInfo.mockResolvedValue({
+        name: 'react',
+        version: '18.3.1',
+        license: 'MIT',
+      })
+
+      const outFile = join(dir, 'r.json')
+      const code = await analyzeCommand(dir, {
+        only: 'license',
+        format: 'json',
+        output: outFile,
+      })
+      expect(code).toBe(EXIT_CODES.OK)
+      const out = JSON.parse(readFileSync(outFile, 'utf-8'))
+      expect(out.licenses).toHaveLength(1)
+      expect(out.licenses[0].risk).toBe('low')
+      expect(out.summary.licenseIssues).toBe(0)
+    })
+
+    it('含 GPL-3.0 → LICENSE_CONFLICT (4)', async () => {
+      writePkg({ a: '^1.0.0', b: '^1.0.0' })
+      npmInfo.mockImplementation(async (name: string) => {
+        if (name === 'a') return { name: 'a', version: '1', license: 'MIT' }
+        return { name: 'b', version: '1', license: 'GPL-3.0' }
+      })
+
+      const outFile = join(dir, 'r.json')
+      const code = await analyzeCommand(dir, {
+        only: 'license',
+        format: 'json',
+        output: outFile,
+      })
+      expect(code).toBe(EXIT_CODES.LICENSE_CONFLICT)
+      const out = JSON.parse(readFileSync(outFile, 'utf-8'))
+      expect(out.summary.licenseIssues).toBe(1)
+      expect(
+        out.licenses.find((l: { name: string }) => l.name === 'b').risk,
+      ).toBe('high')
+    })
+  })
+
+  // -----------------------------------------------------------------
   // 占位维度
   // -----------------------------------------------------------------
 
-  it('--only license 应返回 OK 并打 warn（占位维度，输出空报告）', async () => {
+  it('--only security 应返回 OK 并打 warn（占位维度，输出空报告）', async () => {
     writePkg({ react: '^18.0.0' })
     const code = await analyzeCommand(dir, {
-      only: 'license',
+      only: 'security',
       format: 'json',
       output: join(dir, 'r.json'),
     })

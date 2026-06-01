@@ -19,6 +19,7 @@
 import { Command } from 'commander'
 
 import { analyzeCommand } from './commands/analyze.js'
+import { optimizeCommand } from './commands/optimize.js'
 import { treeCommand } from './commands/tree.js'
 import { EXIT_CODES } from './utils/exitCode.js'
 import { logger, setLogLevel } from './utils/logger.js'
@@ -56,13 +57,13 @@ program
     '只分析特定维度: size|health|license|security',
     'size',
   )
-  .option('--format <type>', '输出格式: terminal|json', 'terminal')
+  .option('--format <type>', '输出格式: terminal|json|html', 'terminal')
   .option('--output <path>', '输出文件路径')
   .option('--top <n>', '显示 TOP N 体积大户', '10')
   .option('--include-dev', '同时分析 devDependencies', false)
   .action(async (path: string, options: Record<string, unknown>) => {
     const exitCode = await analyzeCommand(path, {
-      format: options.format as 'terminal' | 'json',
+      format: options.format as 'terminal' | 'json' | 'html',
       output: options.output as string | undefined,
       top: Number(options.top),
       includeDev: Boolean(options.includeDev),
@@ -93,13 +94,22 @@ program
 
 program
   .command('optimize')
-  .description('🚧 生成优化建议（待 Phase 2 实现）')
+  .description('跨维度聚合分析并生成优化建议')
   .argument('[path]', '项目路径', '.')
-  .action(() => {
-    logger.warn(
-      'optimize 命令将在 Phase 2 实现（依赖 health/license analyzer + optimizer）',
-    )
-    process.exit(EXIT_CODES.OK)
+  .option('--format <type>', '输出格式: terminal|json|html', 'terminal')
+  .option('--output <path>', '输出文件路径')
+  .option('--include-dev', '同时分析 devDependencies', false)
+  .option('--skip-health', '跳过健康度维度（避免 GitHub API 调用）', false)
+  .option('--skip-license', '跳过许可证维度', false)
+  .action(async (path: string, options: Record<string, unknown>) => {
+    const code = await optimizeCommand(path, {
+      format: options.format as 'terminal' | 'json' | 'html',
+      output: options.output as string | undefined,
+      includeDev: Boolean(options.includeDev),
+      skipHealth: Boolean(options.skipHealth),
+      skipLicense: Boolean(options.skipLicense),
+    })
+    process.exit(code)
   })
 
 program
@@ -116,11 +126,21 @@ program
 
 program
   .command('report')
-  .description('🚧 生成 HTML 报告（待 Phase 2 实现）')
+  .description('生成完整 HTML 报告（optimize --format html 的快捷方式）')
   .argument('[path]', '项目路径', '.')
-  .action(() => {
-    logger.warn('report 命令将在 Phase 2 实现（依赖 HTML renderer）')
-    process.exit(EXIT_CODES.OK)
+  .option('--output <path>', '输出文件路径', 'dep-radar-report.html')
+  .option('--include-dev', '同时分析 devDependencies', false)
+  .option('--skip-health', '跳过健康度维度（避免 GitHub API 调用）', false)
+  .option('--skip-license', '跳过许可证维度', false)
+  .action(async (path: string, options: Record<string, unknown>) => {
+    const code = await optimizeCommand(path, {
+      format: 'html',
+      output: options.output as string,
+      includeDev: Boolean(options.includeDev),
+      skipHealth: Boolean(options.skipHealth),
+      skipLicense: Boolean(options.skipLicense),
+    })
+    process.exit(code)
   })
 
 // =====================================================================
