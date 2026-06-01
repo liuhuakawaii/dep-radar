@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { readdir, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,16 +8,19 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DataCache } from './cache.js'
 
 describe('DataCache', () => {
+  let root: string
   let dir: string
   let cache: DataCache
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), 'dep-radar-cache-'))
+    root = mkdtempSync(join(tmpdir(), 'dep-radar-cache-'))
+    dir = join(root, 'cache', 'inner')
+    mkdirSync(dir, { recursive: true })
     cache = new DataCache({ cacheDir: dir, ttl: 60_000 })
   })
 
   afterEach(() => {
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(root, { recursive: true, force: true })
   })
 
   describe('get/set/clear 基本读写', () => {
@@ -89,12 +92,9 @@ describe('DataCache', () => {
     it('包含 .. 的 key 不应该穿越目录', async () => {
       await cache.set('../../etc/passwd', { evil: true })
       // 文件应该写在 dir 内（.. 被替换为 __）
-      // 验证：dir 的父目录里没有任何被偷创建的文件
-      const parentBefore = await readdir(join(dir, '..'))
-      const parentBeforeCount = parentBefore.length
-      await cache.set('../../another', { x: 1 })
-      const parentAfter = await readdir(join(dir, '..'))
-      expect(parentAfter.length).toBe(parentBeforeCount)
+      // 验证：受控测试根目录下没有被偷创建的 etc/another 等逃逸路径
+      expect((await readdir(root)).sort()).toEqual(['cache'])
+      expect(await cache.get('../../etc/passwd')).toEqual({ evil: true })
     })
   })
 
