@@ -25,14 +25,20 @@
 
 ## 当前进度
 
-> 当前处于 **脚手架阶段**（PLAN Step 1 已完成）。
-> 业务功能将按 Phase 1 → Phase 2 → Phase 3 顺序实现。
+> **Phase 1（MVP）已基本完成**，可端到端运行 `analyze` 命令。
+> Phase 2/3 的能力（优化建议、HTML 报告、对比分析、安全/许可证维度）将按 PLAN 顺序逐步接入。
 
-- [x] Step 1：项目脚手架（工程化配置、目录结构、构建/测试/lint 链路）
-- [ ] Step 2：类型系统
-- [ ] Step 3：工具函数
-- [ ] Step 4：数据获取层
-- [ ] ... 详见 `PLAN-v2.md` 第三章
+- [x] Step 1：项目脚手架
+- [x] Step 2：类型系统（`src/types/`）
+- [x] Step 3：错误类与工具函数（`src/errors/`、`src/utils/`）
+- [x] Step 4-5：数据获取层（pkg-size、bundlephobia、npm、github、cache、http）
+- [x] Step 6：包体积分析器（`src/analyzers/bundle.ts`）
+- [x] Step 7：终端 + JSON 报告生成器（`src/report/`）
+- [x] Step 8：配置文件加载（`src/config/loader.ts`，支持 `dep-radar.config.{ts,js,cjs,mjs,json}` / `.dep-radarrc.*` / `package.json` 字段）
+- [x] Step 9：CLI 框架 + analyze + tree 命令
+- [ ] Step 11-13：健康度、许可证、优化建议 analyzer（Phase 2）
+- [ ] Step 14：HTML 报告（Phase 2）
+- [ ] Step 15-17：安全审计、对比分析（Phase 3）
 
 ---
 
@@ -77,8 +83,62 @@ pnpm install
 
 ```bash
 pnpm build
-node ./dist/cli.js
+
+# 查看帮助
+node ./dist/cli.js --help
+
+# 分析当前项目（默认 terminal 输出）
+node ./dist/cli.js analyze
+
+# 输出 JSON 到文件
+node ./dist/cli.js analyze --format json --output report.json
+
+# 只看 TOP 5 体积大户
+node ./dist/cli.js analyze --top 5
+
+# 查看依赖树（npm/pnpm 支持，yarn 待实现）
+node ./dist/cli.js tree --depth 2
 ```
+
+### 4. 配置文件示例
+
+在项目根目录放 `dep-radar.config.ts`（或 `.dep-radarrc.json` 等）：
+
+```ts
+import { defineConfig } from 'dep-radar'
+
+export default defineConfig({
+  budget: {
+    totalGzip: 500 * 1024, // 总 gzip 上限 500KB
+    perPackage: { moment: 0 }, // 禁用 moment
+  },
+  ignore: ['@internal/*'],
+  dataSource: ['pkg-size', 'bundlephobia'],
+  cacheTTL: 3600,
+})
+```
+
+#### 已实现的 CLI 选项
+
+| 选项              | 说明                                                 |
+| ----------------- | ---------------------------------------------------- |
+| `--format <type>` | `terminal`（默认） / `json`                          |
+| `--output <path>` | 写入文件                                             |
+| `--top <n>`       | 显示前 N 个体积大户（默认 10）                       |
+| `--include-dev`   | 同时分析 `devDependencies`                           |
+| `--only <dim>`    | 维度过滤：`size` / `health` / `license` / `security` |
+| `--verbose`       | 详细日志                                             |
+| `--silent`        | 静默模式                                             |
+
+#### CI 集成的退出码
+
+| 码  | 含义                 |
+| --- | -------------------- |
+| 0   | OK                   |
+| 1   | 通用错误             |
+| 2   | 体积超出 budget      |
+| 3   | 许可证冲突（待实现） |
+| 4   | 检测到漏洞（待实现） |
 
 ---
 
