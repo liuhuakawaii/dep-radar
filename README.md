@@ -36,7 +36,8 @@
 - [x] Step 7：终端 + JSON 报告生成器（`src/report/`）
 - [x] Step 8：配置文件加载（`src/config/loader.ts`，支持 `dep-radar.config.{ts,js,cjs,mjs,json}` / `.dep-radarrc.*` / `package.json` 字段）
 - [x] Step 9：CLI 框架 + analyze + tree 命令
-- [ ] Step 11-13：健康度、许可证、优化建议 analyzer（Phase 2）
+- [x] Step 11：依赖健康度 analyzer（npm + GitHub 集成，含 deprecated/TS 支持/下载趋势）
+- [ ] Step 12-13：许可证、优化建议 analyzer（Phase 2）
 - [ ] Step 14：HTML 报告（Phase 2）
 - [ ] Step 15-17：安全审计、对比分析（Phase 3）
 
@@ -98,6 +99,22 @@ node ./dist/cli.js analyze --top 5
 
 # 查看依赖树（npm/pnpm 支持，yarn 待实现）
 node ./dist/cli.js tree --depth 2
+
+# 分析依赖健康度（推荐先配 GITHUB_TOKEN 提升 GitHub API 配额）
+node ./dist/cli.js analyze --only health --format json --output health.json
+```
+
+#### 配置 GITHUB_TOKEN（强烈推荐）
+
+未认证时 GitHub API 限流为 **60 次/小时**，依赖较多的项目容易触发。
+在 [GitHub Settings → Developer settings → Personal access tokens](https://github.com/settings/tokens) 创建一个 `public_repo` 权限的 token，然后：
+
+```bash
+# Windows PowerShell
+$env:GITHUB_TOKEN = "ghp_xxx"
+
+# macOS / Linux
+export GITHUB_TOKEN="ghp_xxx"
 ```
 
 ### 4. 配置文件示例
@@ -120,15 +137,15 @@ export default defineConfig({
 
 #### 已实现的 CLI 选项
 
-| 选项              | 说明                                                 |
-| ----------------- | ---------------------------------------------------- |
-| `--format <type>` | `terminal`（默认） / `json`                          |
-| `--output <path>` | 写入文件                                             |
-| `--top <n>`       | 显示前 N 个体积大户（默认 10）                       |
-| `--include-dev`   | 同时分析 `devDependencies`                           |
-| `--only <dim>`    | 维度过滤：`size` / `health` / `license` / `security` |
-| `--verbose`       | 详细日志                                             |
-| `--silent`        | 静默模式                                             |
+| 选项              | 说明                                                                         |
+| ----------------- | ---------------------------------------------------------------------------- |
+| `--format <type>` | `terminal`（默认） / `json`                                                  |
+| `--output <path>` | 写入文件                                                                     |
+| `--top <n>`       | 显示前 N 个体积大户（默认 10，仅 size 维度）                                 |
+| `--include-dev`   | 同时分析 `devDependencies`                                                   |
+| `--only <dim>`    | 维度选择：`size`（默认） / `health` / `license`（占位） / `security`（占位） |
+| `--verbose`       | 详细日志                                                                     |
+| `--silent`        | 静默模式                                                                     |
 
 #### CI 集成的退出码
 

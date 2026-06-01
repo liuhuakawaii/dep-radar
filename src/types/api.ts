@@ -57,6 +57,30 @@ export interface NpmRegistryResponse {
 }
 
 /**
+ * GET https://registry.npmjs.org/{pkg}（完整 document）
+ *
+ * 与 NpmRegistryResponse（/latest）不同之处：
+ * - 顶层不是单一版本的 manifest，而是 document
+ * - 各版本的 manifest 在 versions[version] 下
+ * - 哪个版本是 latest 通过 dist-tags.latest 指定
+ * - time map 包含所有版本发布时间 + modified/created 元数据
+ */
+export interface NpmFullDocResponse {
+  name: string
+  /** dist-tags 通常包含 latest；可能还有 next/beta 等 */
+  'dist-tags'?: { latest?: string; [tag: string]: string | undefined }
+  /** 所有版本的 manifest map */
+  versions?: Record<string, NpmRegistryResponse>
+  /** 各版本发布时间 + modified/created 元数据 */
+  time?: Record<string, string>
+  maintainers?: Array<{ name: string }>
+  /** repository 字段；兼容字符串与对象两种格式 */
+  repository?: { type: string; url: string } | string
+  homepage?: string
+  description?: string
+}
+
+/**
  * GET https://api.npmjs.org/downloads/point/{period}/{pkg}
  */
 export interface NpmDownloadsResponse {

@@ -16,6 +16,7 @@ import { NetworkError, PackageNotFoundError } from '../errors/index.js'
 import type {
   NpmDownloadsRangeResponse,
   NpmDownloadsResponse,
+  NpmFullDocResponse,
   NpmRegistryResponse,
 } from '../types/api.js'
 import { fetchJson } from './http.js'
@@ -64,9 +65,9 @@ export async function getPackageInfo(
  */
 export async function getFullPackageInfo(
   name: string,
-): Promise<NpmRegistryResponse> {
+): Promise<NpmFullDocResponse> {
   return withNotFound(name, () =>
-    fetchJson<NpmRegistryResponse>(
+    fetchJson<NpmFullDocResponse>(
       `${REGISTRY_URL}/${encodeURIComponent(name)}`,
     ),
   )
