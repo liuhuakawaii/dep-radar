@@ -41,8 +41,7 @@
   "author": "liuhuakawaii",
   "license": "MIT",
   "engines": {
-    "node": ">=18.17.0",
-    "pnpm": ">=9"
+    "node": ">=18.17.0"
   },
   "publishConfig": {
     "access": "public"

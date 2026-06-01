@@ -1,5 +1,12 @@
 {
   "permissions": {
-    "allow": ["Bash(npx vitest:*)", "Bash(npx tsc:*)"]
+    "allow": [
+      "Bash(npx vitest:*)",
+      "Bash(npx tsc:*)",
+      "Bash(pnpm test:*)",
+      "Bash(pnpm build:*)",
+      "Bash(node ./dist/cli.js --help)",
+      "Bash(node ./dist/cli.js analyze --help)"
+    ]
   }
 }
