@@ -1,5 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 
+import type { ReplacementRule } from '../types/config.js'
+
 import { parseDepTree, renderTree, type TreeNode } from './tree.js'
 
 beforeAll(() => {
@@ -120,5 +122,101 @@ describe('renderTree', () => {
     const leaf: TreeNode = { name: 'x', version: '1', children: [] }
     const out = renderTree(leaf, 0)
     expect(out).toBe('x@1')
+  })
+})
+
+describe('renderTree 优化提示', () => {
+  const sample: TreeNode = {
+    name: 'my-app',
+    version: '1.0.0',
+    children: [
+      { name: 'react', version: '18.3.1', children: [] },
+      { name: 'lodash', version: '4.17.21', children: [] },
+      { name: 'moment', version: '2.30.1', children: [] },
+      { name: 'ofetch', version: '1.4.0', children: [] },
+    ],
+  }
+
+  const replacements: Record<string, ReplacementRule> = {
+    lodash: {
+      alternative: 'es-toolkit',
+      altPackage: 'es-toolkit',
+      estimatedSavingsPercent: 90,
+      difficulty: 'medium',
+      breakingChange: false,
+      description: 'test',
+    },
+    moment: {
+      alternative: 'dayjs',
+      altPackage: 'dayjs',
+      estimatedSavingsPercent: 97,
+      difficulty: 'low',
+      breakingChange: false,
+      description: 'test',
+    },
+  }
+
+  it('传入 replacements 时应为匹配包显示 [!] 提示', () => {
+    const out = renderTree(sample, Infinity, replacements)
+    expect(out).toContain('[!] 建议替换为 es-toolkit')
+    expect(out).toContain('[!] 建议替换为 dayjs')
+    expect(out).toContain('节省 90%')
+    expect(out).toContain('节省 97%')
+  })
+
+  it('无 replacements 参数时不应显示 [!] 提示', () => {
+    const out = renderTree(sample)
+    expect(out).not.toContain('[!]')
+  })
+
+  it('replacements 为空对象时不应显示 [!] 提示', () => {
+    const out = renderTree(sample, Infinity, {})
+    expect(out).not.toContain('[!]')
+  })
+
+  it('不在 replacements 表中的包不应有提示', () => {
+    const out = renderTree(sample, Infinity, replacements)
+    expect(out).toContain('react@18.3.1')
+    // react 行不应有 [!]
+    const reactLine = out.split('\n').find(l => l.includes('react@'))
+    expect(reactLine).not.toContain('[!]')
+  })
+
+  it('estimatedSavingsPercent 为 0 时不应显示百分比', () => {
+    const rule: Record<string, ReplacementRule> = {
+      lodash: {
+        alternative: 'es-toolkit',
+        altPackage: 'es-toolkit',
+        estimatedSavingsPercent: 0,
+        difficulty: 'medium',
+        breakingChange: false,
+        description: 'test',
+      },
+    }
+    const out = renderTree(sample, Infinity, rule)
+    expect(out).toContain('[!] 建议替换为 es-toolkit')
+    expect(out).not.toContain('节省')
+  })
+
+  it('嵌套子节点也应显示提示', () => {
+    const nested: TreeNode = {
+      name: 'app',
+      version: '1.0.0',
+      children: [
+        {
+          name: 'moment',
+          version: '2.30.1',
+          children: [
+            { name: 'moment-timezone', version: '0.5.45', children: [] },
+          ],
+        },
+      ],
+    }
+    const out = renderTree(nested, Infinity, replacements)
+    const momentLine = out.split('\n').find(l => l.includes('moment@'))
+    expect(momentLine).toContain('[!] 建议替换为 dayjs')
+    // moment-timezone 不在表中，不应有提示
+    const tzLine = out.split('\n').find(l => l.includes('moment-timezone@'))
+    expect(tzLine).not.toContain('[!]')
   })
 })

@@ -81,9 +81,11 @@ program
   .description('查看依赖树')
   .argument('[path]', '项目路径', '.')
   .option('--depth <n>', '最大深度', '5')
+  .option('--no-hints', '不显示优化提示（[!] 替代建议等）')
   .action(async (path: string, options: Record<string, unknown>) => {
     const exitCode = await treeCommand(path, {
       depth: Number(options.depth),
+      hints: Boolean(options.hints),
     })
     process.exit(exitCode)
   })

@@ -17,6 +17,8 @@ import { promisify } from 'node:util'
 
 import chalk from 'chalk'
 
+import { REPLACEMENTS } from '../config/replacements.js'
+import type { ReplacementRule } from '../types/config.js'
 import type { PackageManager } from '../types/package.js'
 import { EXIT_CODES, type ExitCode } from '../utils/exitCode.js'
 import { logger } from '../utils/logger.js'
@@ -27,6 +29,8 @@ const execFileP = promisify(execFile)
 export interface TreeOptions {
   /** 最大渲染深度，超出后用省略号；0 表示只显示根 */
   depth?: number
+  /** 是否显示优化提示（[!] 建议替换等）；默认 true */
+  hints?: boolean
 }
 
 /** 解析后的统一依赖树节点 */
@@ -43,7 +47,7 @@ export async function treeCommand(
   projectPath: string,
   options: TreeOptions = {},
 ): Promise<ExitCode> {
-  const { depth = Infinity } = options
+  const { depth = Infinity, hints = true } = options
   const pm = detectPackageManager(projectPath)
 
   if (pm === 'yarn') {
@@ -85,7 +89,8 @@ export async function treeCommand(
     return EXIT_CODES.ERROR
   }
 
-  process.stdout.write(renderTree(tree, depth) + '\n')
+  const hintMap = hints ? REPLACEMENTS : undefined
+  process.stdout.write(renderTree(tree, depth, hintMap) + '\n')
   return EXIT_CODES.OK
 }
 
@@ -182,15 +187,18 @@ function convertPnpm(
 /**
  * 渲染 TreeNode 为 ASCII 树
  *
+ * @param replacements 可选的替代方案映射表；传入时匹配的包会显示 [!] 优化提示
+ *
  * 导出供单元测试使用。
  */
 export function renderTree(
   node: TreeNode,
   maxDepth: number = Infinity,
+  replacements?: Record<string, ReplacementRule>,
 ): string {
   const lines: string[] = []
   lines.push(chalk.bold(`${node.name}@${node.version}`))
-  renderChildren(node.children, '', 1, maxDepth, lines)
+  renderChildren(node.children, '', 1, maxDepth, replacements, lines)
   return lines.join('\n')
 }
 
@@ -199,6 +207,7 @@ function renderChildren(
   prefix: string,
   depth: number,
   maxDepth: number,
+  replacements: Record<string, ReplacementRule> | undefined,
   out: string[],
 ): void {
   if (depth > maxDepth) {
@@ -210,8 +219,38 @@ function renderChildren(
   children.forEach((child, idx) => {
     const isLast = idx === children.length - 1
     const branch = isLast ? '└── ' : '├── '
-    out.push(prefix + branch + `${child.name}@${chalk.gray(child.version)}`)
+    const hint = buildHint(child.name, replacements)
+    out.push(
+      prefix + branch + `${child.name}@${chalk.gray(child.version)}${hint}`,
+    )
     const nextPrefix = prefix + (isLast ? '    ' : '│   ')
-    renderChildren(child.children, nextPrefix, depth + 1, maxDepth, out)
+    renderChildren(
+      child.children,
+      nextPrefix,
+      depth + 1,
+      maxDepth,
+      replacements,
+      out,
+    )
   })
+}
+
+/**
+ * 为单个包生成 [!] 优化提示
+ *
+ * 匹配 REPLACEMENTS 表时显示替代建议和预估节省百分比。
+ */
+function buildHint(
+  name: string,
+  replacements: Record<string, ReplacementRule> | undefined,
+): string {
+  if (!replacements) return ''
+  const rule = replacements[name]
+  if (!rule) return ''
+
+  const savings =
+    rule.estimatedSavingsPercent > 0
+      ? ` (节省 ${rule.estimatedSavingsPercent}%)`
+      : ''
+  return chalk.yellow(`  [!] 建议替换为 ${rule.alternative}${savings}`)
 }
