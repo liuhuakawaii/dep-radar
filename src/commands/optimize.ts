@@ -138,6 +138,13 @@ export async function optimizeCommand(
     project: pkg.name,
     timestamp: new Date().toISOString(),
     packageManager: pm,
+    dimensions: {
+      size: true,
+      health: !skipHealth,
+      license: !skipLicense,
+      security: false,
+      optimize: true,
+    },
     summary: {
       totalDependencies: bundles.bundles.length,
       totalSize: bundles.totalSize,

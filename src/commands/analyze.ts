@@ -189,6 +189,7 @@ async function runSize(
 
   return {
     ...base,
+    dimensions: { ...base.dimensions, size: true },
     summary: {
       ...base.summary,
       totalDependencies: result.bundles.length,
@@ -234,6 +235,7 @@ async function runHealth(
 
   return {
     ...base,
+    dimensions: { ...base.dimensions, health: true },
     summary: {
       ...base.summary,
       totalDependencies: result.health.length,
@@ -291,6 +293,7 @@ async function runLicense(
 
   return {
     ...base,
+    dimensions: { ...base.dimensions, license: true },
     summary: {
       ...base.summary,
       totalDependencies: result.licenses.length,
@@ -355,6 +358,7 @@ async function runSecurity(
 
   return {
     ...base,
+    dimensions: { ...base.dimensions, security: true },
     summary: {
       ...base.summary,
       vulnerabilities: result.summary,
@@ -408,6 +412,13 @@ function makeEmptyReport(
     project,
     timestamp: new Date().toISOString(),
     packageManager: pm,
+    dimensions: {
+      size: false,
+      health: false,
+      license: false,
+      security: false,
+      optimize: false,
+    },
     summary: {
       totalDependencies: 0,
       totalSize: 0,

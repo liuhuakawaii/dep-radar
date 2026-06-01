@@ -9,6 +9,13 @@ function emptyReport(over: Partial<AnalysisReport> = {}): AnalysisReport {
     project: 'demo',
     timestamp: '2026-06-01T10:00:00.000Z',
     packageManager: 'pnpm',
+    dimensions: {
+      size: true,
+      health: true,
+      license: true,
+      security: true,
+      optimize: true,
+    },
     summary: {
       totalDependencies: 0,
       totalSize: 0,
@@ -72,13 +79,32 @@ describe('renderHtmlReport', () => {
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;')
   })
 
-  it('数据全空时各 section 应有友好提示', () => {
+  it('全维度开启 + 数据为空时各 section 应有友好提示', () => {
     const html = renderHtmlReport(emptyReport())
     expect(html).toContain('包体积')
     expect(html).toContain('优化建议')
     expect(html).toContain('依赖健康度')
     expect(html).toContain('许可证合规')
     expect(html).toContain('安全审计')
+  })
+
+  it('维度关闭时对应 section 不应出现', () => {
+    const html = renderHtmlReport(
+      emptyReport({
+        dimensions: {
+          size: true,
+          health: false,
+          license: false,
+          security: false,
+          optimize: false,
+        },
+      }),
+    )
+    expect(html).toContain('包体积')
+    expect(html).not.toContain('优化建议')
+    expect(html).not.toContain('依赖健康度')
+    expect(html).not.toContain('许可证合规')
+    expect(html).not.toContain('安全审计')
   })
 
   it('bundle 数据应渲染为表格 + 进度条', () => {

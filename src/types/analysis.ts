@@ -170,6 +170,19 @@ export interface AnalysisReport {
   /** 分析时间（ISO 字符串） */
   timestamp: string
   packageManager: PackageManager
+  /**
+   * 本次分析实际运行的维度。
+   *
+   * 渲染层据此决定是否输出对应 section——未运行的维度不应作为"无数据"展示，
+   * 避免误导用户以为该维度尚未实现。
+   */
+  dimensions: {
+    size: boolean
+    health: boolean
+    license: boolean
+    security: boolean
+    optimize: boolean
+  }
   summary: {
     totalDependencies: number
     totalSize: number

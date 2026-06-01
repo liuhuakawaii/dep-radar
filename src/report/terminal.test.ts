@@ -13,6 +13,13 @@ function emptyReport(override: Partial<AnalysisReport> = {}): AnalysisReport {
     project: 'demo',
     timestamp: '2026-06-01T10:00:00.000Z',
     packageManager: 'pnpm',
+    dimensions: {
+      size: true,
+      health: true,
+      license: true,
+      security: true,
+      optimize: true,
+    },
     summary: {
       totalDependencies: 0,
       totalSize: 0,
@@ -41,15 +48,33 @@ describe('renderTerminalReport', () => {
     expect(out).toContain('pnpm')
   })
 
-  it('数据全为空时应显示各 section 的"待实现/无数据"提示', () => {
+  it('全维度开启 + 数据为空时应显示各 section 标题和占位提示', () => {
     const out = renderTerminalReport(emptyReport())
     expect(out).toContain('包体积')
     expect(out).toContain('依赖健康度')
     expect(out).toContain('许可证合规')
     expect(out).toContain('安全审计')
     expect(out).toContain('优化建议')
-    // 各 section 应有"待实现"或"无数据"
-    expect(out).toMatch(/无数据|待 Phase/)
+    expect(out).toMatch(/无数据|未发现/)
+  })
+
+  it('维度关闭时对应 section 不应出现', () => {
+    const out = renderTerminalReport(
+      emptyReport({
+        dimensions: {
+          size: true,
+          health: false,
+          license: false,
+          security: false,
+          optimize: false,
+        },
+      }),
+    )
+    expect(out).toContain('包体积')
+    expect(out).not.toContain('依赖健康度')
+    expect(out).not.toContain('许可证合规')
+    expect(out).not.toContain('安全审计')
+    expect(out).not.toContain('优化建议')
   })
 
   it('summary 应该按需展示警告项', () => {
@@ -172,7 +197,7 @@ describe('renderTerminalReport', () => {
     expect(out).toContain('GPL 可能要求开源')
   })
 
-  it('security 空时显示"未发现已知漏洞"或"待实现"', () => {
+  it('security 全部无漏洞时显示"未发现已知漏洞"', () => {
     const out1 = renderTerminalReport(
       emptyReport({
         security: [

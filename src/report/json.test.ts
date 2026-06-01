@@ -7,6 +7,13 @@ const sample: AnalysisReport = {
   project: 'demo',
   timestamp: '2026-06-01T10:00:00.000Z',
   packageManager: 'pnpm',
+  dimensions: {
+    size: true,
+    health: false,
+    license: false,
+    security: false,
+    optimize: false,
+  },
   summary: {
     totalDependencies: 1,
     totalSize: 100,

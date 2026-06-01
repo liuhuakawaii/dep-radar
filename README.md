@@ -40,25 +40,34 @@ npx @liuhuakawaii/dep-radar analyze
 
 ---
 
-## 当前进度
+## CLI
 
-> **Phase 1（MVP）已基本完成**，可端到端运行 `analyze` 命令。
-> Phase 2/3 的能力（优化建议、HTML 报告、对比分析、安全/许可证维度）将按 PLAN 顺序逐步接入。
+```bash
+ # 1. 体积分析（默认）
+  dep-radar analyze
 
-- [x] Step 1：项目脚手架
-- [x] Step 2：类型系统（`src/types/`）
-- [x] Step 3：错误类与工具函数（`src/errors/`、`src/utils/`）
-- [x] Step 4-5：数据获取层（pkg-size、bundlephobia、npm、github、cache、http）
-- [x] Step 6：包体积分析器（`src/analyzers/bundle.ts`）
-- [x] Step 7：终端 + JSON 报告生成器（`src/report/`）
-- [x] Step 8：配置文件加载（`src/config/loader.ts`，支持 `dep-radar.config.{ts,js,cjs,mjs,json}` / `.dep-radarrc.*` / `package.json` 字段）
-- [x] Step 9：CLI 框架 + analyze + tree 命令
-- [x] Step 11：依赖健康度 analyzer（npm + GitHub 集成，含 deprecated/TS 支持/下载趋势）
-- [x] Step 12：许可证合规 analyzer（SPDX 复合表达式 + 5 类风险评级）
-- [x] Step 13：优化建议 engine + `optimize` 命令（10 条内置替代规则，6 维度规则引擎）
-- [x] Step 14：HTML 报告（内联 CSS、CSS-only 图表、深色主题、离线可用）
-- [ ] Step 14：HTML 报告（Phase 2）
-- [ ] Step 15-17：安全审计、对比分析（Phase 3）
+  # 2. 看 TOP 5 体积大户
+  dep-radar analyze --top 5
+
+  # 3. 输出 JSON 到文件（CI 用）
+  dep-radar analyze --format json --output dep-report.json
+
+  # 4. 看依赖树
+  dep-radar tree --depth 2
+
+  # 5. 健康度分析（建议先配 GITHUB_TOKEN，否则 60 次/小时限流）
+  $env:GITHUB_TOKEN = "ghp_xxx"        # PowerShell
+  dep-radar analyze --only health
+
+  # 6. 许可证合规检查
+  dep-radar analyze --only license
+
+  # 7. 跨维度聚合 + 优化建议（核心命令，最值得跑）
+  dep-radar optimize
+
+  # 8. 生成漂亮的 HTML 报告（离线可看）
+  dep-radar optimize --format html --output dep-report.html
+```
 
 ---
 
@@ -73,64 +82,6 @@ npx @liuhuakawaii/dep-radar analyze
 > 强制使用 pnpm（`preinstall` 钩子已经通过 `only-allow pnpm` 拦截 npm / yarn）。
 
 ---
-
-## 快速开始
-
-### 1. 克隆与安装
-
-```bash
-git clone <repo-url> dep-radar
-cd dep-radar
-pnpm install
-```
-
-### 2. 常用脚本
-
-| 命令                 | 说明                                   |
-| -------------------- | -------------------------------------- |
-| `pnpm dev`           | 监听模式构建，开发时使用               |
-| `pnpm build`         | 构建产物到 `dist/`                     |
-| `pnpm typecheck`     | 仅做 TypeScript 类型检查               |
-| `pnpm lint`          | ESLint 检查（`--max-warnings 0` 严格） |
-| `pnpm lint:fix`      | 自动修复可修复的 lint 问题             |
-| `pnpm format`        | Prettier 格式化 `src/`                 |
-| `pnpm format:check`  | 仅检查格式                             |
-| `pnpm test`          | 运行所有测试                           |
-| `pnpm test:watch`    | 测试监听模式                           |
-| `pnpm test:coverage` | 测试 + 覆盖率报告                      |
-
-### 3. 本地运行 CLI
-
-```bash
-pnpm build
-
-# 查看帮助
-node ./dist/cli.js --help
-
-# 分析当前项目（默认 terminal 输出）
-node ./dist/cli.js analyze
-
-# 输出 JSON 到文件
-node ./dist/cli.js analyze --format json --output report.json
-
-# 只看 TOP 5 体积大户
-node ./dist/cli.js analyze --top 5
-
-# 查看依赖树（npm/pnpm 支持，yarn 待实现）
-node ./dist/cli.js tree --depth 2
-
-# 分析依赖健康度（推荐先配 GITHUB_TOKEN 提升 GitHub API 配额）
-node ./dist/cli.js analyze --only health --format json --output health.json
-
-# 检查许可证合规
-node ./dist/cli.js analyze --only license
-
-# 跨维度聚合 + 生成优化建议（核心命令）
-node ./dist/cli.js optimize
-
-# 生成漂亮的 HTML 报告（离线可用，直接浏览器打开）
-node ./dist/cli.js optimize --format html --output report.html
-```
 
 #### 配置 GITHUB_TOKEN（强烈推荐）
 

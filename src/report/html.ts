@@ -193,11 +193,11 @@ function renderBody(report: AnalysisReport): string {
   <div class="wrap">
     ${renderHeader(report)}
     ${renderSummaryCards(report)}
-    ${renderBundleSection(report.bundles)}
-    ${renderOptimizationSection(report.optimizations)}
-    ${renderHealthSection(report.health)}
-    ${renderLicenseSection(report.licenses)}
-    ${renderSecuritySection(report.security)}
+    ${report.dimensions.size ? renderBundleSection(report.bundles) : ''}
+    ${report.dimensions.optimize ? renderOptimizationSection(report.optimizations) : ''}
+    ${report.dimensions.health ? renderHealthSection(report.health) : ''}
+    ${report.dimensions.license ? renderLicenseSection(report.licenses) : ''}
+    ${report.dimensions.security ? renderSecuritySection(report.security) : ''}
     ${renderFooter()}
   </div>`
 }
@@ -298,7 +298,7 @@ function sourceBadge(src: BundleInfo['source']): string {
 
 function renderOptimizationSection(opts: OptimizationSuggestion[]): string {
   if (opts.length === 0) {
-    return `<h2>优化建议</h2><div class="empty">（暂无建议；可运行 <code>dep-radar optimize</code> 生成）</div>`
+    return `<h2>优化建议</h2><div class="card"><span class="badge green">✓</span> 未发现明显优化空间</div>`
   }
   const items = opts
     .map(
@@ -348,7 +348,7 @@ function priorityBadge(p: string): string {
 
 function renderHealthSection(health: HealthInfo[]): string {
   if (health.length === 0) {
-    return `<h2>依赖健康度</h2><div class="empty">（暂无数据；可运行 <code>dep-radar analyze --only health</code> 生成）</div>`
+    return `<h2>依赖健康度</h2><div class="empty">（无数据）</div>`
   }
   const rows = health
     .map(h => {
@@ -377,7 +377,7 @@ function renderHealthSection(health: HealthInfo[]): string {
 
 function renderLicenseSection(licenses: LicenseInfo[]): string {
   if (licenses.length === 0) {
-    return `<h2>许可证合规</h2><div class="empty">（暂无数据；可运行 <code>dep-radar analyze --only license</code> 生成）</div>`
+    return `<h2>许可证合规</h2><div class="empty">（无数据）</div>`
   }
   const risky = licenses.filter(l => l.risk !== 'low')
   if (risky.length === 0) {
@@ -407,7 +407,7 @@ function renderLicenseSection(licenses: LicenseInfo[]): string {
 
 function renderSecuritySection(security: SecurityInfo[]): string {
   if (security.length === 0) {
-    return `<h2>安全审计</h2><div class="empty">（该维度待 Phase 3 实现）</div>`
+    return `<h2>安全审计</h2><div class="card"><span class="badge green">✓</span> 未发现已知漏洞</div>`
   }
   const vuln = security.filter(s => s.totalVulnerabilities > 0)
   if (vuln.length === 0) {

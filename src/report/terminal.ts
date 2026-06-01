@@ -33,11 +33,13 @@ export function renderTerminalReport(report: AnalysisReport): string {
   const sections = [
     renderHeader(report),
     renderSummary(report),
-    renderBundleSection(report.bundles),
-    renderHealthSection(report.health),
-    renderLicenseSection(report.licenses),
-    renderSecuritySection(report.security),
-    renderOptimizationSection(report.optimizations),
+    report.dimensions.size ? renderBundleSection(report.bundles) : '',
+    report.dimensions.health ? renderHealthSection(report.health) : '',
+    report.dimensions.license ? renderLicenseSection(report.licenses) : '',
+    report.dimensions.security ? renderSecuritySection(report.security) : '',
+    report.dimensions.optimize
+      ? renderOptimizationSection(report.optimizations)
+      : '',
   ]
   return sections.filter(Boolean).join('\n\n') + '\n'
 }
@@ -166,9 +168,7 @@ function renderSource(source: BundleInfo['source']): string {
 function renderHealthSection(health: HealthInfo[]): string {
   if (health.length === 0) {
     return (
-      chalk.bold.underline('依赖健康度') +
-      '\n' +
-      chalk.gray('  （该维度待 Phase 2 实现）')
+      chalk.bold.underline('依赖健康度') + '\n' + chalk.gray('  （无数据）')
     )
   }
 
@@ -207,9 +207,7 @@ function renderHealthSection(health: HealthInfo[]): string {
 function renderLicenseSection(licenses: LicenseInfo[]): string {
   if (licenses.length === 0) {
     return (
-      chalk.bold.underline('许可证合规') +
-      '\n' +
-      chalk.gray('  （该维度待 Phase 2 实现）')
+      chalk.bold.underline('许可证合规') + '\n' + chalk.gray('  （无数据）')
     )
   }
 
@@ -259,7 +257,7 @@ function renderSecuritySection(security: SecurityInfo[]): string {
     return (
       chalk.bold.underline('安全审计') +
       '\n' +
-      chalk.gray('  （该维度待 Phase 3 实现）')
+      chalk.green('  ✓ 未发现已知漏洞')
     )
   }
 
@@ -310,7 +308,7 @@ function renderOptimizationSection(
     return (
       chalk.bold.underline('优化建议') +
       '\n' +
-      chalk.gray('  （该维度待 Phase 2 实现）')
+      chalk.green('  ✓ 未发现明显优化空间')
     )
   }
 
