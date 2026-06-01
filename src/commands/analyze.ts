@@ -12,12 +12,17 @@
  *   - 2 BUDGET_EXCEEDED（size 维度的 budget 校验）
  */
 
+import { execFile } from 'node:child_process'
 import { writeFile } from 'node:fs/promises'
+import { promisify } from 'node:util'
 import ora from 'ora'
+
+const execFileP = promisify(execFile)
 
 import { analyzeBundleSize } from '../analyzers/bundle.js'
 import { analyzeHealth } from '../analyzers/health.js'
 import { analyzeLicenses } from '../analyzers/license.js'
+import { analyzeSecurity, type AuditExecutor } from '../analyzers/security.js'
 import { loadUserConfig } from '../config/loader.js'
 import { ConfigError, PackageNotFoundError } from '../errors/index.js'
 import { renderHtmlReport } from '../report/html.js'
@@ -33,7 +38,7 @@ import type { PackageJson } from '../types/package.js'
 import { EXIT_CODES, type ExitCode } from '../utils/exitCode.js'
 import { readPackageJson } from '../utils/fs.js'
 import { logger } from '../utils/logger.js'
-import { detectPackageManager } from '../utils/packageManager.js'
+import { detectPackageManager, PM_COMMANDS } from '../utils/packageManager.js'
 
 import { buildBundleFetcher } from './buildBundleFetcher.js'
 import { buildHealthFetcher } from './buildHealthFetcher.js'
@@ -89,6 +94,10 @@ export async function analyzeCommand(
       report = await runHealth(baseReport, pkg, config, { includeDev })
     } else if (only === 'license') {
       report = await runLicense(baseReport, pkg, config, { includeDev })
+    } else if (only === 'security') {
+      report = await runSecurity(baseReport, pkg, projectPath, pm, config, {
+        includeDev,
+      })
     } else {
       logger.warn(`维度 "${only}" 尚未实现，将在后续 Phase 接入`)
       report = baseReport
@@ -295,6 +304,65 @@ function countLicenseIssues(list: LicenseInfo[]): number {
   return list.filter(l => l.risk !== 'low').length
 }
 
+// -----------------------------------------------------------------
+// security 维度
+// -----------------------------------------------------------------
+
+interface SecurityDimOptions {
+  includeDev: boolean
+}
+
+const defaultAuditExecutor: AuditExecutor = {
+  async execute(cmd, args, cwd) {
+    return execFileP(cmd, args, {
+      cwd,
+      maxBuffer: 10 * 1024 * 1024, // 10MB
+    })
+  },
+}
+
+async function runSecurity(
+  base: AnalysisReport,
+  _pkg: PackageJson,
+  projectPath: string,
+  pm: ReturnType<typeof detectPackageManager>,
+  config: DepRadarConfig,
+  { includeDev }: SecurityDimOptions,
+): Promise<AnalysisReport> {
+  const auditCmd = PM_COMMANDS[pm].audit
+  const spinner = ora('正在执行安全审计...').start()
+  let result
+  try {
+    result = await analyzeSecurity(
+      auditCmd,
+      pm,
+      projectPath,
+      defaultAuditExecutor,
+      {
+        includeDev,
+        ignore: config.ignore,
+      },
+    )
+    spinner.succeed('安全审计完成')
+  } catch (err) {
+    spinner.fail('安全审计失败')
+    throw err
+  }
+
+  if (result.skipped.length > 0) {
+    logger.warn(`安全审计跳过：${result.skipped.map(s => s.reason).join('; ')}`)
+  }
+
+  return {
+    ...base,
+    summary: {
+      ...base.summary,
+      vulnerabilities: result.summary,
+    },
+    security: result.security,
+  }
+}
+
 // =====================================================================
 // setup
 // =====================================================================
@@ -366,7 +434,16 @@ function decideExitCode(
   report: AnalysisReport,
   config: DepRadarConfig,
 ): ExitCode {
-  // 1) license：跑了 license 维度且命中 high 风险 → LICENSE_CONFLICT
+  // 1) security：跑了 security 维度且有 high/critical 漏洞 → HIGH_VULNERABILITY
+  if (report.security.length > 0) {
+    const { critical, high } = report.summary.vulnerabilities
+    if (critical > 0 || high > 0) {
+      logger.error(`检测到安全漏洞：${critical} 个 critical，${high} 个 high`)
+      return EXIT_CODES.HIGH_VULNERABILITY
+    }
+  }
+
+  // 2) license：跑了 license 维度且命中 high 风险 → LICENSE_CONFLICT
   if (report.licenses.length > 0) {
     const hasHigh = report.licenses.some(l => l.risk === 'high')
     if (hasHigh) {
