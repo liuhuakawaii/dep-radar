@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { NetworkError, RateLimitError } from '../errors/index.js'
-import { fetchJson } from './http.js'
+import { fetchJson, isOffline, setOfflineMode } from './http.js'
 
 /**
  * 构造一个最小的、可控的 fetch mock
@@ -190,5 +190,54 @@ describe('fetchJson', () => {
     expect(caught).toBeInstanceOf(NetworkError)
     expect((caught as NetworkError).status).toBe(0)
     expect((caught as NetworkError).message).toContain('超时')
+  })
+})
+
+// =====================================================================
+// 离线模式
+// =====================================================================
+
+describe('offline mode', () => {
+  const originalEnv = process.env.OFFLINE
+
+  afterEach(() => {
+    // 恢复
+    setOfflineMode(null)
+    if (originalEnv === undefined) {
+      delete process.env.OFFLINE
+    } else {
+      process.env.OFFLINE = originalEnv
+    }
+  })
+
+  it('默认应为在线', () => {
+    delete process.env.OFFLINE
+    setOfflineMode(null)
+    expect(isOffline()).toBe(false)
+  })
+
+  it('setOfflineMode(true) 应启用离线', () => {
+    setOfflineMode(true)
+    expect(isOffline()).toBe(true)
+  })
+
+  it('setOfflineMode(false) 应强制在线（即使 OFFLINE=1）', () => {
+    process.env.OFFLINE = '1'
+    setOfflineMode(false)
+    expect(isOffline()).toBe(false)
+  })
+
+  it('OFFLINE=1 环境变量应启用离线', () => {
+    setOfflineMode(null)
+    process.env.OFFLINE = '1'
+    expect(isOffline()).toBe(true)
+  })
+
+  it('离线模式下 fetchJson 应直接抛 NetworkError', async () => {
+    setOfflineMode(true)
+    await expect(fetchJson('https://example.com/x')).rejects.toThrow(
+      NetworkError,
+    )
+    await expect(fetchJson('https://example.com/x')).rejects.toThrow(/离线模式/)
   })
 })

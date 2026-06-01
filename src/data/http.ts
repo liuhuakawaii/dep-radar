@@ -6,12 +6,38 @@
  * 1. 统一改 User-Agent / Accept 头
  * 2. 统一控制超时与重试策略
  * 3. 统一把网络层错误转换为 dep-radar 自定义错误类
+ * 4. 离线模式下直接拦截，避免无意义的网络等待
  *
  * 注意：使用 Node 18+ 原生 fetch（基于 undici），无需 axios 等第三方库。
  */
 
 import { NetworkError, RateLimitError } from '../errors/index.js'
 import { withRetry } from '../utils/withRetry.js'
+
+// =====================================================================
+// 离线模式
+// =====================================================================
+
+let offlineOverride: boolean | null = null
+
+/**
+ * 设置离线模式（由 CLI --offline 选项调用）
+ *
+ * 传 null 恢复自动检测。
+ */
+export function setOfflineMode(value: boolean | null): void {
+  offlineOverride = value
+}
+
+/**
+ * 检测当前是否处于离线模式
+ *
+ * 优先级：setOfflineMode() 设置 > OFFLINE 环境变量 > 默认在线
+ */
+export function isOffline(): boolean {
+  if (offlineOverride !== null) return offlineOverride
+  return process.env.OFFLINE === '1' || process.env.OFFLINE === 'true'
+}
 
 /**
  * 全局 User-Agent
@@ -49,6 +75,11 @@ export async function fetchJson<T>(
   url: string,
   options: FetchOptions = {},
 ): Promise<T> {
+  // 离线模式：直接拦截，避免无意义的网络等待
+  if (isOffline()) {
+    throw new NetworkError(`离线模式下跳过网络请求：${url}`, 0)
+  }
+
   const { timeout = 10000, retries = 3, headers = {} } = options
 
   return withRetry(

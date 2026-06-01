@@ -22,6 +22,9 @@ import { analyzeCommand } from './commands/analyze.js'
 import { compareCommand } from './commands/compare.js'
 import { optimizeCommand } from './commands/optimize.js'
 import { treeCommand } from './commands/tree.js'
+import { setOfflineMode } from './data/http.js'
+import { DepRadarError } from './errors/index.js'
+import { errorCodeToExitCode, formatError } from './utils/errorEnricher.js'
 import { EXIT_CODES } from './utils/exitCode.js'
 import { logger, setLogLevel } from './utils/logger.js'
 
@@ -39,10 +42,18 @@ program
   .option('--verbose', '显示详细日志')
   .option('--silent', '静默模式')
   .option('--registry <url>', '自定义 npm registry')
+  .option(
+    '--offline',
+    '离线模式，跳过所有网络请求（也可通过 OFFLINE=1 环境变量启用）',
+  )
   .hook('preAction', thisCommand => {
     const opts = thisCommand.opts()
     if (opts.silent) setLogLevel('silent')
     else if (opts.verbose) setLogLevel('verbose')
+    if (opts.offline) {
+      setOfflineMode(true)
+      logger.info('已启用离线模式，所有网络请求将被跳过')
+    }
   })
 
 // =====================================================================
@@ -154,10 +165,23 @@ program
 // =====================================================================
 
 async function main(): Promise<void> {
+  const opts = program.opts()
+  const verbose = Boolean(opts.verbose)
+
   try {
     await program.parseAsync(process.argv)
   } catch (err) {
-    logger.error(err instanceof Error ? err.message : String(err))
+    // 增强错误信息：追加上下文提示
+    const lines = formatError(err, verbose)
+    for (const line of lines) {
+      logger.error(line)
+    }
+
+    // DepRadarError 子类：按 error code 映射退出码
+    if (err instanceof DepRadarError) {
+      process.exit(errorCodeToExitCode(err.code))
+    }
+
     process.exit(EXIT_CODES.ERROR)
   }
 }
