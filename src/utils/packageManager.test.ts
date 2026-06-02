@@ -33,6 +33,11 @@ describe('detectPackageManager', () => {
     expect(detectPackageManager(dir)).toBe('pnpm')
   })
 
+  it('存在 package-lock.json 时识别为 npm', () => {
+    writeFileSync(join(dir, 'package-lock.json'), '{}')
+    expect(detectPackageManager(dir)).toBe('npm')
+  })
+
   it('无 lock 文件时回退到 npm', () => {
     expect(detectPackageManager(dir)).toBe('npm')
   })

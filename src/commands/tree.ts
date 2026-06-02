@@ -96,9 +96,17 @@ export async function treeCommand(
     stdout = r.stdout
   } catch (err) {
     // npm ls 在 peerDep 冲突时退出码非 0，但 stdout 仍有合法 JSON
-    const e = err as { stdout?: string; message?: string }
+    const e = err as { stdout?: string; message?: string; code?: string }
     if (e.stdout) {
       stdout = e.stdout
+    } else if (e.code === 'ENOENT') {
+      logger.error(
+        `找不到命令 "${cmd}"，请确认已安装并在 PATH 中可用。` +
+          (cmd === 'npm'
+            ? '\n提示：如果你使用 nvm/fnm，请先运行对应的 shell 初始化脚本。'
+            : ''),
+      )
+      return EXIT_CODES.ERROR
     } else {
       logger.error(
         `执行 ${cmd} ${args.join(' ')} 失败：${e.message ?? String(err)}`,

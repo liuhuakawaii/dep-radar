@@ -23,6 +23,7 @@ const execFileP = promisify(execFile)
 export function detectPackageManager(cwd: string): PackageManager {
   if (existsSync(join(cwd, 'pnpm-lock.yaml'))) return 'pnpm'
   if (existsSync(join(cwd, 'yarn.lock'))) return 'yarn'
+  if (existsSync(join(cwd, 'package-lock.json'))) return 'npm'
   return 'npm'
 }
 
