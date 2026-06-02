@@ -306,11 +306,37 @@ function renderOptimizationSection(opts: OptimizationSuggestion[]): string {
     return `<h2>优化建议</h2><div class="card"><span class="badge green">✓</span> 未发现明显优化空间</div>`
   }
   const items = opts
-    .map(
-      o => `
+    .map(o => {
+      const confBadge = o.confidence
+        ? `<span class="badge" style="background:#555;color:#fff;font-size:0.75em">${escapeHtml(o.confidence)}</span> `
+        : ''
+      const actBadge = o.actionability
+        ? `<span class="badge" style="background:#444;color:#fff;font-size:0.75em">${escapeHtml(o.actionability)}</span> `
+        : ''
+      const evidenceHtml =
+        o.evidence && o.evidence.length > 0
+          ? `<details style="margin-top:6px"><summary style="cursor:pointer;color:var(--muted)">📎 证据 (${o.evidence.length})</summary><ul style="margin:4px 0 0 18px;padding:0;font-size:0.9em">${o.evidence
+              .map(ev => {
+                const loc = ev.file
+                  ? ` <code>${escapeHtml(ev.file)}${ev.line ? `:${ev.line}` : ''}</code>`
+                  : ''
+                return `<li><strong>${escapeHtml(ev.source)}</strong>${loc}: ${escapeHtml(ev.detail)}</li>`
+              })
+              .join('')}</ul></details>`
+          : ''
+      const preconditionsHtml =
+        o.preconditions && o.preconditions.length > 0
+          ? `<ul style="margin:4px 0 0 18px;padding:0;font-size:0.9em;color:#e67e22">${o.preconditions.map(p => `<li>⚠ 前提：${escapeHtml(p)}</li>`).join('')}</ul>`
+          : ''
+      const stepsHtml =
+        o.suggestedSteps && o.suggestedSteps.length > 0
+          ? `<ol style="margin:4px 0 0 18px;padding:0;font-size:0.9em">${o.suggestedSteps.map(s => `<li>${escapeHtml(s)}</li>`).join('')}</ol>`
+          : ''
+      return `
     <div class="suggestion ${escapeHtml(o.priority)}">
       <div class="title">
         <span class="badge ${priorityBadge(o.priority)}">${escapeHtml(o.priority)}</span>
+        ${confBadge}${actBadge}
         ${escapeHtml(o.packageName)}
         <span class="muted" style="font-weight:400">[${escapeHtml(o.type)}]</span>
         ${
@@ -329,18 +355,21 @@ function renderOptimizationSection(opts: OptimizationSuggestion[]): string {
           ? `<div class="muted" style="margin-top:6px">建议替代：<strong style="color:var(--accent)">${escapeHtml(o.alternative)}</strong> · 难度 ${escapeHtml(o.difficulty)}${o.breakingChange ? ' · 破坏性变更' : ''}</div>`
           : ''
       }
+      ${evidenceHtml}
+      ${preconditionsHtml}
       ${
         o.caveats && o.caveats.length > 0
           ? `<ul class="muted" style="margin:6px 0 0 18px;padding:0">${o.caveats.map(c => `<li>⚠ ${escapeHtml(c)}</li>`).join('')}</ul>`
           : ''
       }
+      ${stepsHtml}
       ${
         o.migrationGuide
           ? `<div style="margin-top:6px">迁移指南：<a href="${escapeHtml(o.migrationGuide)}" target="_blank" rel="noopener">${escapeHtml(o.migrationGuide)}</a></div>`
           : ''
       }
-    </div>`,
-    )
+    </div>`
+    })
     .join('')
   return `<h2>优化建议</h2>${items}`
 }

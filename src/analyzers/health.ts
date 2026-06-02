@@ -1,7 +1,7 @@
 /**
  * 依赖健康度分析器
  *
- * 输入：项目的 package.json（dependencies + 可选 devDependencies）
+ * 输入：DependencyEntry[]（来自 DependencyInventory）+ HealthFetcher
  * 输出：每个依赖的 HealthInfo + 总览
  *
  * 健康度算法（0-100，与 PLAN Step 11 一致）：
@@ -29,7 +29,9 @@ import pLimit from 'p-limit'
 import { parseGitHubUrl } from '../data/github.js'
 import type { GithubRepoResponse, NpmFullDocResponse } from '../types/api.js'
 import type { HealthInfo } from '../types/analysis.js'
+import type { DependencyEntry } from '../types/inventory.js'
 import type { PackageJson } from '../types/package.js'
+import { buildIgnoreMatcher } from '../utils/ignore.js'
 import { logger } from '../utils/logger.js'
 
 // =====================================================================
@@ -48,9 +50,9 @@ export interface HealthFetcher {
 export interface AnalyzeHealthOptions {
   /** 并发数；默认 5（npm/github 限流友好） */
   concurrency?: number
-  /** 是否同时分析 devDependencies；默认 false */
+  /** @deprecated 使用 entries 的 declaredIn 过滤代替 */
   includeDev?: boolean
-  /** glob 模式数组，匹配的包跳过；与 bundle analyzer 共用语义 */
+  /** @deprecated 使用 buildIgnoreMatcher 代替 */
   ignore?: string[]
   /** 健康度评分权重；未指定的字段使用默认值 */
   healthWeights?: HealthWeights
@@ -74,10 +76,60 @@ export interface HealthAnalysisResult {
 }
 
 // =====================================================================
-// 主入口
+// 主入口（新版：接受 DependencyEntry[]）
 // =====================================================================
 
 export async function analyzeHealth(
+  entries: DependencyEntry[],
+  fetcher: HealthFetcher,
+  options: AnalyzeHealthOptions = {},
+): Promise<HealthAnalysisResult> {
+  const { concurrency = 5, ignore, healthWeights, onProgress } = options
+
+  const isIgnored = buildIgnoreMatcher(ignore ?? [])
+  const skipped: HealthAnalysisResult['skipped'] = []
+  const targets = entries.filter(e => !isIgnored(e.name))
+
+  const limit = pLimit(concurrency)
+  let completed = 0
+  const total = targets.length
+  const results = await Promise.all(
+    targets.map(entry =>
+      limit(async () => {
+        try {
+          const result = await analyzeOne(entry.name, fetcher, healthWeights)
+          completed++
+          onProgress?.({ current: completed, total, name: entry.name })
+          return result
+        } catch (err) {
+          completed++
+          onProgress?.({ current: completed, total, name: entry.name })
+          skipped.push({
+            name: entry.name,
+            reason: err instanceof Error ? err.message : String(err),
+          })
+          return null
+        }
+      }),
+    ),
+  )
+
+  return {
+    health: results.filter((x): x is HealthInfo => x !== null),
+    skipped,
+  }
+}
+
+// =====================================================================
+// 旧版兼容入口（接受 PackageJson）
+// =====================================================================
+
+/**
+ * 旧版入口：接受 PackageJson
+ *
+ * @deprecated 新代码应使用 buildInventory() + analyzeHealth(entries, fetcher)
+ */
+export async function analyzeHealthFromPackage(
   pkg: PackageJson,
   fetcher: HealthFetcher,
   options: AnalyzeHealthOptions = {},
@@ -95,12 +147,12 @@ export async function analyzeHealth(
     ...(includeDev ? pkg.devDependencies : {}),
   }
 
-  const ignorePatterns = (ignore ?? []).map(compileIgnorePattern)
+  const isIgnored = buildIgnoreMatcher(ignore ?? [])
   const skipped: HealthAnalysisResult['skipped'] = []
   const targets: string[] = []
 
   for (const name of Object.keys(deps)) {
-    if (ignorePatterns.some(p => p.test(name))) continue
+    if (isIgnored(name)) continue
     targets.push(name)
   }
 
@@ -303,15 +355,6 @@ export function extractRepositoryUrl(
   return typeof r === 'string' ? r : r.url
 }
 
-/** 把 ignore 中的 glob 模式编译为正则（仅支持 * 与 ? 两种通配符） */
-function compileIgnorePattern(pattern: string): RegExp {
-  const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*/g, '.*')
-    .replace(/\?/g, '.')
-  return new RegExp(`^${escaped}$`)
-}
-
 /** 在数据获取失败时给一个合理默认值，避免单一字段失败影响整条记录 */
 async function safeNumber(p: Promise<number>): Promise<number> {
   try {
@@ -336,16 +379,3 @@ async function safeTrend(
     return 'stable'
   }
 }
-
-/**
- * 从 repository URL 抽取 owner / repo
- *
- * 支持：
- *   - git+https://github.com/owner/repo.git
- *   - https://github.com/owner/repo
- *   - git://github.com/owner/repo.git
- *   - github:owner/repo
- *   - git@github.com:owner/repo.git
- *
- * 非 GitHub URL 返回 null。
- */

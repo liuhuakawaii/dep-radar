@@ -1,5 +1,5 @@
 /**
- * `analyze` 命令：组装 config → fetcher → analyzer → report → exitCode
+ * `analyze` 命令：组装 config → inventory → fetcher → analyzer → report → exitCode
  *
  * 按 `--only` 维度分支：
  *   - size（默认）：体积分析（pkg-size / bundlephobia）
@@ -20,9 +20,13 @@ import ora from 'ora'
 
 const execFileP = promisify(execFile)
 
+import { analyzeBuildArtifacts } from '../analyzers/buildArtifacts.js'
 import { analyzeBundleSize } from '../analyzers/bundle.js'
+import { classifyDependencies } from '../analyzers/classifier.js'
 import { analyzeHealth } from '../analyzers/health.js'
+import { buildInventory } from '../analyzers/inventory.js'
 import { analyzeLicenses } from '../analyzers/license.js'
+import { analyzeReachability } from '../analyzers/reachability.js'
 import { analyzeSecurity, type AuditExecutor } from '../analyzers/security.js'
 import { DataCache } from '../data/cache.js'
 import { loadUserConfig } from '../config/loader.js'
@@ -37,6 +41,10 @@ import type {
   LicenseInfo,
 } from '../types/analysis.js'
 import type { DepRadarConfig } from '../types/config.js'
+import type {
+  DependencyEntry,
+  DependencyInventory,
+} from '../types/inventory.js'
 import type { PackageJson } from '../types/package.js'
 import { EXIT_CODES, type ExitCode } from '../utils/exitCode.js'
 import { readPackageJson } from '../utils/fs.js'
@@ -113,6 +121,12 @@ export interface AnalyzeOptions {
   since?: string
   /** verbose 模式：逐包输出结果 */
   verbose?: boolean
+  /** 体积分析范围：runtime（默认）/ all / non-runtime */
+  scope?: 'runtime' | 'all' | 'non-runtime'
+  /** webpack stats.json 文件路径 */
+  statsFile?: string
+  /** 构建输出目录路径 */
+  assetsDir?: string
 }
 
 /**
@@ -153,6 +167,9 @@ export async function analyzeCommand(
     concurrency,
     since,
     verbose = false,
+    scope = 'runtime',
+    statsFile,
+    assetsDir,
   } = options
 
   // ============================================================
@@ -175,8 +192,30 @@ export async function analyzeCommand(
   // concurrency 优先级：CLI --concurrency > config.concurrency > 默认 5
   const resolvedConcurrency = concurrency ?? config.concurrency ?? 5
 
+  // ============================================================
+  // 2. 构建 DependencyInventory
+  // ============================================================
+  const spinner = ora('正在解析依赖清单...').start()
+  let inventory: DependencyInventory
+  try {
+    inventory = await buildInventory(projectPath, pkg, {
+      includeDev,
+      ignore: config.ignore,
+    })
+    spinner.succeed(
+      `依赖清单解析完成（${inventory.directCount} 直接 + ${inventory.transitiveCount} 传递，来源：${inventory.resolvedFrom}）`,
+    )
+    for (const w of inventory.warnings) {
+      logger.warn(`[inventory] ${w}`)
+    }
+  } catch (err) {
+    spinner.fail('依赖清单解析失败')
+    logger.error(err instanceof Error ? err.message : String(err))
+    return EXIT_CODES.ERROR
+  }
+
   // 增量分析：过滤为仅变更的依赖
-  let analysisPkg = pkg
+  let entries = inventory.entries
   if (since) {
     try {
       const changed = await getChangedDependencies(projectPath, since)
@@ -188,12 +227,7 @@ export async function analyzeCommand(
       logger.info(
         `增量分析：${changed.added.length} 新增, ${changed.changed.length} 变更, ${changed.removed.length} 移除`,
       )
-      // 创建只包含变更依赖的 package.json 副本
-      analysisPkg = {
-        ...pkg,
-        dependencies: filterDeps(pkg.dependencies, changedSet),
-        devDependencies: filterDeps(pkg.devDependencies, changedSet),
-      }
+      entries = entries.filter(e => changedSet.has(e.name))
     } catch (err) {
       logger.warn(
         `增量分析失败（回退到全量）：${err instanceof Error ? err.message : String(err)}`,
@@ -202,47 +236,110 @@ export async function analyzeCommand(
   }
 
   // ============================================================
-  // 2. 按维度跑分析；组装报告
+  // 2.5 源码可达性分析
   // ============================================================
-  const baseReport = makeEmptyReport(analysisPkg.name, pm)
+  let reachabilityResults: Awaited<ReturnType<typeof analyzeReachability>> = []
+  try {
+    reachabilityResults = await analyzeReachability(projectPath, entries, {
+      srcGlobs: config.classification?.runtimeEntryGlobs,
+    })
+    if (reachabilityResults.length > 0) {
+      logger.info(`可达性分析：${reachabilityResults.length} 个包被源码引用`)
+    }
+  } catch (err) {
+    logger.warn(
+      `可达性分析失败（跳过）：${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+
+  // ============================================================
+  // 2.6 依赖分类
+  // ============================================================
+  entries = classifyDependencies(entries, pkg, {
+    overrides: config.classification?.overrides,
+    reachabilityResults,
+  })
+  // 更新 inventory 中的 entries
+  inventory.entries = entries
+
+  // ============================================================
+  // 2.7 构建产物分析（可选）
+  // ============================================================
+  const effectiveStatsFile = statsFile ?? config.buildArtifacts?.statsFile
+  const effectiveAssetsDir = assetsDir ?? config.buildArtifacts?.assetsDir
+  let buildArtifactResult:
+    | Awaited<ReturnType<typeof analyzeBuildArtifacts>>
+    | undefined
+  if (effectiveStatsFile || effectiveAssetsDir) {
+    try {
+      buildArtifactResult = await analyzeBuildArtifacts(projectPath, {
+        statsFile: effectiveStatsFile,
+        assetsDir: effectiveAssetsDir,
+      })
+      if (buildArtifactResult.source !== 'none') {
+        logger.info(
+          `构建产物分析：${buildArtifactResult.source}，${buildArtifactResult.assets.length} 个资源，${buildArtifactResult.packageContributions.length} 个包有归因数据`,
+        )
+      }
+      for (const w of buildArtifactResult.warnings) {
+        logger.warn(`[buildArtifacts] ${w}`)
+      }
+    } catch (err) {
+      logger.warn(
+        `构建产物分析失败（跳过）：${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+
+  // 分类统计
+  const classified = {
+    runtime: 0,
+    build: 0,
+    test: 0,
+    script: 0,
+    config: 0,
+    unknown: 0,
+  }
+  for (const e of entries) {
+    if (e.usageClass) classified[e.usageClass]++
+  }
+
+  // ============================================================
+  // 3. 按维度跑分析；组装报告
+  // ============================================================
+  const baseReport = makeEmptyReport(pkg.name, pm)
+  baseReport.inventory = inventory
+  baseReport.summary.classified = classified
+  if (buildArtifactResult) baseReport.buildArtifacts = buildArtifactResult
   const dimensions = parseDimensions(only)
   let report = baseReport
 
   try {
     for (const dim of dimensions) {
       if (dim === 'size') {
-        report = await runSize(report, analysisPkg, config, {
+        report = await runSize(report, entries, config, {
           top,
-          includeDev,
+          scope,
           cache,
           concurrency: resolvedConcurrency,
           verbose,
         })
       } else if (dim === 'health') {
-        report = await runHealth(report, analysisPkg, config, {
-          includeDev,
+        report = await runHealth(report, entries, config, {
           cache,
           registry: resolvedRegistry,
           concurrency: resolvedConcurrency,
         })
       } else if (dim === 'license') {
-        report = await runLicense(report, analysisPkg, config, {
-          includeDev,
+        report = await runLicense(report, entries, projectPath, config, {
           cache,
           registry: resolvedRegistry,
           concurrency: resolvedConcurrency,
         })
       } else if (dim === 'security') {
-        report = await runSecurity(
-          report,
-          analysisPkg,
-          projectPath,
-          pm,
-          config,
-          {
-            includeDev,
-          },
-        )
+        report = await runSecurity(report, projectPath, pm, config, {
+          includeDev,
+        })
       } else {
         logger.warn(`维度 "${dim}" 尚未实现，将在后续 Phase 接入`)
       }
@@ -253,7 +350,7 @@ export async function analyzeCommand(
   }
 
   // ============================================================
-  // 3. 输出
+  // 4. 输出
   // ============================================================
   const rendered = renderReport(report, format)
 
@@ -274,7 +371,7 @@ export async function analyzeCommand(
   }
 
   // ============================================================
-  // 4. 退出码
+  // 5. 退出码
   // ============================================================
   return decideExitCode(report, config)
 }
@@ -303,7 +400,7 @@ export function renderReport(
 
 interface SizeOptions {
   top: number
-  includeDev: boolean
+  scope: 'runtime' | 'all' | 'non-runtime'
   cache?: DataCache
   concurrency: number
   verbose?: boolean
@@ -311,9 +408,9 @@ interface SizeOptions {
 
 async function runSize(
   base: AnalysisReport,
-  pkg: PackageJson,
+  entries: DependencyEntry[],
   config: DepRadarConfig,
-  { top, includeDev, cache, concurrency, verbose }: SizeOptions,
+  { top, scope, cache, concurrency, verbose }: SizeOptions,
 ): Promise<AnalysisReport> {
   const spinner = ora('正在分析依赖体积...').start()
   let result
@@ -323,10 +420,10 @@ async function runSize(
       cache,
       bundlephobiaRecord: config.bundlephobiaRecord,
     })
-    result = await analyzeBundleSize(pkg, fetcher, {
+    result = await analyzeBundleSize(entries, fetcher, {
       concurrency,
       topN: top,
-      includeDev,
+      scope,
       ignore: config.ignore,
       onProgress: ({ current, total, name }) => {
         spinner.text = `正在分析体积 [${current}/${total}] ${name}...`
@@ -373,7 +470,6 @@ async function runSize(
 }
 
 interface HealthDimOptions {
-  includeDev: boolean
   cache?: DataCache
   registry?: string
   concurrency: number
@@ -381,18 +477,16 @@ interface HealthDimOptions {
 
 async function runHealth(
   base: AnalysisReport,
-  pkg: PackageJson,
+  entries: DependencyEntry[],
   config: DepRadarConfig,
-  { includeDev, cache, registry, concurrency }: HealthDimOptions,
+  { cache, registry, concurrency }: HealthDimOptions,
 ): Promise<AnalysisReport> {
   const spinner = ora('正在分析依赖健康度...').start()
   let result
   try {
     const fetcher = buildHealthFetcher({ cache, registry })
-    result = await analyzeHealth(pkg, fetcher, {
+    result = await analyzeHealth(entries, fetcher, {
       concurrency,
-      includeDev,
-      ignore: config.ignore,
       healthWeights: config.healthWeights,
       onProgress: ({ current, total, name }) => {
         spinner.text = `正在分析健康度 [${current}/${total}] ${name}...`
@@ -433,7 +527,6 @@ function countDeprecated(list: HealthInfo[]): number {
 // -----------------------------------------------------------------
 
 interface LicenseDimOptions {
-  includeDev: boolean
   cache?: DataCache
   registry?: string
   concurrency: number
@@ -441,18 +534,17 @@ interface LicenseDimOptions {
 
 async function runLicense(
   base: AnalysisReport,
-  pkg: PackageJson,
-  config: DepRadarConfig,
-  { includeDev, cache, registry, concurrency }: LicenseDimOptions,
+  entries: DependencyEntry[],
+  projectPath: string,
+  _config: DepRadarConfig,
+  { cache, registry, concurrency }: LicenseDimOptions,
 ): Promise<AnalysisReport> {
   const spinner = ora('正在分析许可证合规...').start()
   let result
   try {
-    const fetcher = buildLicenseFetcher({ cache, registry })
-    result = await analyzeLicenses(pkg, fetcher, {
+    const fetcher = buildLicenseFetcher({ cache, registry, projectPath })
+    result = await analyzeLicenses(entries, fetcher, {
       concurrency,
-      includeDev,
-      ignore: config.ignore,
     })
     spinner.succeed('许可证分析完成')
   } catch (err) {
@@ -508,17 +600,20 @@ const defaultAuditExecutor: AuditExecutor = {
 
 async function runSecurity(
   base: AnalysisReport,
-  _pkg: PackageJson,
   projectPath: string,
   pm: ReturnType<typeof detectPackageManager>,
   config: DepRadarConfig,
   { includeDev }: SecurityDimOptions,
 ): Promise<AnalysisReport> {
-  // yarn classic 使用不同的 audit 命令
-  let auditCmd = PM_COMMANDS[pm].audit
+  // 根据 includeDev 选择 audit 命令：prod-only 或全量
+  let auditCmd = includeDev ? PM_COMMANDS[pm].auditAll : PM_COMMANDS[pm].audit
   if (pm === 'yarn') {
     const yarnVersion = await detectYarnVersion(projectPath)
-    if (yarnVersion === 'classic') auditCmd = YARN_CLASSIC_COMMANDS.audit
+    if (yarnVersion === 'classic') {
+      auditCmd = includeDev
+        ? YARN_CLASSIC_COMMANDS.auditAll
+        : YARN_CLASSIC_COMMANDS.audit
+    }
   }
   const spinner = ora('正在执行安全审计...').start()
   let result
@@ -672,16 +767,4 @@ function decideExitCode(
   }
 
   return EXIT_CODES.OK
-}
-
-function filterDeps(
-  deps: Record<string, string> | undefined,
-  names: Set<string>,
-): Record<string, string> | undefined {
-  if (!deps) return deps
-  const filtered: Record<string, string> = {}
-  for (const [name, version] of Object.entries(deps)) {
-    if (names.has(name)) filtered[name] = version
-  }
-  return filtered
 }

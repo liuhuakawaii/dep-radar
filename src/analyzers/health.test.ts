@@ -6,7 +6,7 @@ import type { HealthInfo } from '../types/analysis.js'
 import type { PackageJson } from '../types/package.js'
 
 import {
-  analyzeHealth,
+  analyzeHealthFromPackage,
   computeHealthScore,
   extractRepositoryUrl,
   monthsSince,
@@ -316,7 +316,10 @@ describe('analyzeHealth', () => {
       } satisfies GithubRepoResponse),
     })
 
-    const result = await analyzeHealth(makePkg({ react: '^18.0.0' }), fetcher)
+    const result = await analyzeHealthFromPackage(
+      makePkg({ react: '^18.0.0' }),
+      fetcher,
+    )
     expect(result.health).toHaveLength(1)
     expect(result.skipped).toHaveLength(0)
 
@@ -343,7 +346,10 @@ describe('analyzeHealth', () => {
       getGitHubRepo: vi.fn().mockResolvedValue(null),
     })
 
-    const result = await analyzeHealth(makePkg({ moment: '^2.0.0' }), fetcher)
+    const result = await analyzeHealthFromPackage(
+      makePkg({ moment: '^2.0.0' }),
+      fetcher,
+    )
     const h = result.health[0]!
     expect(h.deprecated).toBe(true)
     expect(h.deprecatedMessage).toBe('已废弃，请使用 X 替代')
@@ -358,7 +364,10 @@ describe('analyzeHealth', () => {
       getGitHubRepo: vi.fn().mockResolvedValue(null),
     })
 
-    const result = await analyzeHealth(makePkg({ react: '^18.0.0' }), fetcher)
+    const result = await analyzeHealthFromPackage(
+      makePkg({ react: '^18.0.0' }),
+      fetcher,
+    )
     const h = result.health[0]!
     expect(h.githubStars).toBeUndefined()
     expect(h.githubLastPush).toBeUndefined()
@@ -373,7 +382,7 @@ describe('analyzeHealth', () => {
       getTrend: vi.fn().mockResolvedValue('stable'),
       getGitHubRepo: ghMock,
     })
-    await analyzeHealth(makePkg({ x: '1' }), fetcher)
+    await analyzeHealthFromPackage(makePkg({ x: '1' }), fetcher)
     expect(ghMock).not.toHaveBeenCalled()
   })
 
@@ -389,7 +398,7 @@ describe('analyzeHealth', () => {
       getTrend: vi.fn().mockResolvedValue('stable'),
       getGitHubRepo: ghMock,
     })
-    await analyzeHealth(makePkg({ x: '1' }), fetcher)
+    await analyzeHealthFromPackage(makePkg({ x: '1' }), fetcher)
     expect(ghMock).not.toHaveBeenCalled()
   })
 
@@ -404,7 +413,7 @@ describe('analyzeHealth', () => {
       getGitHubRepo: vi.fn().mockResolvedValue(null),
     })
 
-    const result = await analyzeHealth(
+    const result = await analyzeHealthFromPackage(
       makePkg({ react: '^18.0.0', broken: '^1.0.0' }),
       fetcher,
     )
@@ -419,7 +428,10 @@ describe('analyzeHealth', () => {
       getTrend: vi.fn().mockResolvedValue('stable'),
       getGitHubRepo: vi.fn().mockResolvedValue(null),
     })
-    const r = await analyzeHealth(makePkg({ a: '1' }, { b: '1' }), fetcher)
+    const r = await analyzeHealthFromPackage(
+      makePkg({ a: '1' }, { b: '1' }),
+      fetcher,
+    )
     expect(r.health.map(h => h.name)).toEqual(['a'])
   })
 
@@ -430,9 +442,13 @@ describe('analyzeHealth', () => {
       getTrend: vi.fn().mockResolvedValue('stable'),
       getGitHubRepo: vi.fn().mockResolvedValue(null),
     })
-    const r = await analyzeHealth(makePkg({ a: '1' }, { b: '1' }), fetcher, {
-      includeDev: true,
-    })
+    const r = await analyzeHealthFromPackage(
+      makePkg({ a: '1' }, { b: '1' }),
+      fetcher,
+      {
+        includeDev: true,
+      },
+    )
     expect(r.health.map(h => h.name).sort()).toEqual(['a', 'b'])
   })
 
@@ -443,7 +459,7 @@ describe('analyzeHealth', () => {
       getTrend: vi.fn().mockResolvedValue('stable'),
       getGitHubRepo: vi.fn().mockResolvedValue(null),
     })
-    const r = await analyzeHealth(
+    const r = await analyzeHealthFromPackage(
       makePkg({ '@internal/a': '1', '@internal/b': '1', react: '1' }),
       fetcher,
       { ignore: ['@internal/*'] },
@@ -459,7 +475,7 @@ describe('analyzeHealth', () => {
       getTrend: vi.fn().mockResolvedValue('stable'),
       getGitHubRepo: vi.fn().mockResolvedValue(null),
     })
-    const r = await analyzeHealth(makePkg({ a: '1' }), fetcher)
+    const r = await analyzeHealthFromPackage(makePkg({ a: '1' }), fetcher)
     expect(r.health[0]!.hasTypeScriptTypes).toBe(false)
   })
 
@@ -471,7 +487,7 @@ describe('analyzeHealth', () => {
       getTrend: vi.fn().mockResolvedValue('stable'),
       getGitHubRepo: vi.fn().mockResolvedValue(null),
     })
-    const r = await analyzeHealth(makePkg({ a: '1' }), fetcher)
+    const r = await analyzeHealthFromPackage(makePkg({ a: '1' }), fetcher)
     expect(r.health[0]!.hasTypeScriptTypes).toBe(true)
   })
 
@@ -484,7 +500,7 @@ describe('analyzeHealth', () => {
       getTrend: vi.fn().mockRejectedValue(new Error('trend down')),
       getGitHubRepo: vi.fn().mockResolvedValue(null),
     })
-    const r = await analyzeHealth(makePkg({ react: '^18' }), fetcher)
+    const r = await analyzeHealthFromPackage(makePkg({ react: '^18' }), fetcher)
     expect(r.health[0]!.weeklyDownloads).toBe(0)
     expect(r.health[0]!.downloadTrend).toBe('stable')
     // 单字段失败不应导致整条 skipped

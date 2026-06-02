@@ -1,3 +1,5 @@
+import type { UsageClass } from './classifier.js'
+
 /**
  * 用户配置文件（dep-radar.config.ts）相关的类型
  *
@@ -121,5 +123,43 @@ export interface DepRadarConfig {
     hasTypeScriptTypes?: number
     /** 下载趋势权重；默认 15 */
     downloadTrend?: number
+  }
+  /**
+   * 依赖分类配置
+   */
+  classification?: {
+    /**
+     * 手动覆盖特定包的分类
+     *
+     * key 为包名，value 为 UsageClass。
+     * 优先级最高，会覆盖内置规则。
+     */
+    overrides?: Record<string, UsageClass>
+    /**
+     * 运行时入口 glob 模式列表
+     *
+     * 默认 ['src/**'']，用于判断哪些文件中的 import 视为 runtime。
+     */
+    runtimeEntryGlobs?: string[]
+  }
+  /**
+   * 构建产物分析配置
+   */
+  buildArtifacts?: {
+    /** webpack stats.json 文件路径（相对于项目根） */
+    statsFile?: string
+    /** 构建输出目录路径（相对于项目根） */
+    assetsDir?: string
+  }
+  /**
+   * 依赖卫生检测配置
+   */
+  hygiene?: {
+    /** 忽略的包名列表（不检测 unused/misplaced） */
+    ignore?: string[]
+    /** 允许动态 import 的包名列表（不标记为 unused） */
+    allowDynamic?: string[]
+    /** 强制标记为 runtime 的包名列表（不标记为 misplaced） */
+    runtimePackages?: string[]
   }
 }

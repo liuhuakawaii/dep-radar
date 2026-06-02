@@ -51,19 +51,22 @@ export interface CommandSpec {
  */
 export const PM_COMMANDS: Record<
   PackageManager,
-  { list: CommandSpec; audit: CommandSpec }
+  { list: CommandSpec; audit: CommandSpec; auditAll: CommandSpec }
 > = {
   npm: {
     list: { cmd: 'npm', args: ['ls', '--all', '--json'] },
-    audit: { cmd: 'npm', args: ['audit', '--json'] },
+    audit: { cmd: 'npm', args: ['audit', '--json', '--omit=dev'] },
+    auditAll: { cmd: 'npm', args: ['audit', '--json'] },
   },
   pnpm: {
     list: { cmd: 'pnpm', args: ['list', '--depth=Infinity', '--json'] },
-    audit: { cmd: 'pnpm', args: ['audit', '--json'] },
+    audit: { cmd: 'pnpm', args: ['audit', '--json', '--prod'] },
+    auditAll: { cmd: 'pnpm', args: ['audit', '--json'] },
   },
   yarn: {
     list: { cmd: 'yarn', args: ['info', '--json', '--recursive'] },
     audit: { cmd: 'yarn', args: ['npm', 'audit', '--json'] },
+    auditAll: { cmd: 'yarn', args: ['npm', 'audit', '--json'] },
   },
 }
 
@@ -77,9 +80,11 @@ export const PM_COMMANDS: Record<
 export const YARN_CLASSIC_COMMANDS: {
   list: CommandSpec
   audit: CommandSpec
+  auditAll: CommandSpec
 } = {
   list: { cmd: 'yarn', args: ['list', '--json'] },
   audit: { cmd: 'yarn', args: ['audit', '--json'] },
+  auditAll: { cmd: 'yarn', args: ['audit', '--json'] },
 }
 
 export type YarnVersion = 'classic' | 'berry'

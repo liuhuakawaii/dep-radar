@@ -127,6 +127,9 @@ program
   .option('--top <n>', '显示 TOP N 体积大户', '10')
   .option('--include-dev', '同时分析 devDependencies', false)
   .option('--since <ref>', '增量分析：只分析相对于指定 git ref 变更的依赖')
+  .option('--scope <scope>', '体积分析范围: runtime|all|non-runtime', 'runtime')
+  .option('--stats <file>', 'webpack stats.json 路径（真实 bundle 分析）')
+  .option('--assets-dir <dir>', '构建输出目录（计算实际 gzip）')
   .option('--workspace <name>', '分析指定工作区子包')
   .option('--all-workspaces', '分析所有工作区子包并汇总', false)
   .action(async (path: string, options: Record<string, unknown>) => {
@@ -145,6 +148,9 @@ program
         : undefined,
       since: options.since as string | undefined,
       verbose: Boolean(globals.verbose),
+      scope: (options.scope as 'runtime' | 'all' | 'non-runtime') ?? 'runtime',
+      statsFile: options.stats as string | undefined,
+      assetsDir: options.assetsDir as string | undefined,
     }
 
     const wsPaths = await resolveWorkspacePath(
@@ -210,6 +216,9 @@ program
   .option('--skip-health', '跳过健康度维度（避免 GitHub API 调用）', false)
   .option('--skip-license', '跳过许可证维度', false)
   .option('--skip-security', '跳过安全审计维度', false)
+  .option('--scope <scope>', '体积分析范围: runtime|all|non-runtime', 'runtime')
+  .option('--stats <file>', 'webpack stats.json 路径（真实 bundle 分析）')
+  .option('--assets-dir <dir>', '构建输出目录（计算实际 gzip）')
   .option('--workspace <name>', '分析指定工作区子包')
   .option('--all-workspaces', '分析所有工作区子包并汇总', false)
   .action(async (path: string, options: Record<string, unknown>) => {
@@ -221,6 +230,9 @@ program
       skipHealth: Boolean(options.skipHealth),
       skipLicense: Boolean(options.skipLicense),
       skipSecurity: Boolean(options.skipSecurity),
+      scope: (options.scope as 'runtime' | 'all' | 'non-runtime') ?? 'runtime',
+      statsFile: options.stats as string | undefined,
+      assetsDir: options.assetsDir as string | undefined,
       cacheEnabled: globals.cache !== false,
       cacheDir: globals.cacheDir as string | undefined,
       registry: globals.registry as string | undefined,

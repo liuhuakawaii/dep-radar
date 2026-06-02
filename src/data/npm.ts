@@ -64,6 +64,32 @@ export async function getPackageInfo(
 }
 
 /**
+ * 拉取指定版本的 manifest（轻量）
+ *
+ * 用于 license analyzer 需要精确版本的 license 字段时。
+ * version 为空时回退到 /latest。
+ */
+export async function getPackageVersionInfo(
+  name: string,
+  version?: string,
+  cache?: DataCache,
+  registry?: string,
+): Promise<NpmRegistryResponse> {
+  if (!version) return getPackageInfo(name, cache, registry)
+  const baseUrl = registry ?? DEFAULT_REGISTRY_URL
+  const cacheKey = `npm-info:${name}@${version}`
+  const fetchFn = (): Promise<NpmRegistryResponse> =>
+    withNotFound(name, () =>
+      fetchJson<NpmRegistryResponse>(
+        `${baseUrl}/${encodeURIComponent(name)}/${encodeURIComponent(version)}`,
+      ),
+    )
+
+  if (cache) return cache.withCache(cacheKey, fetchFn)
+  return fetchFn()
+}
+
+/**
  * 拉取包的完整 document（含所有版本与 time）
  *
  * 适合 health analyzer 需要 lastPublish、maintainers 完整列表的场景。

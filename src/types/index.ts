@@ -30,3 +30,18 @@ export type {
 } from './api.js'
 
 export type { DepRadarConfig, ReplacementRule } from './config.js'
+
+export type {
+  DeclaredIn,
+  ResolvedFrom,
+  DependencyEntry,
+  DependencyInventory,
+  BuildInventoryOptions,
+} from './inventory.js'
+
+export type {
+  UsageClass,
+  ClassificationEvidence,
+  ClassifiedEntry,
+  ClassifyOptions,
+} from './classifier.js'

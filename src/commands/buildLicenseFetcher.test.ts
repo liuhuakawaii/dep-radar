@@ -3,21 +3,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PackageNotFoundError } from '../errors/index.js'
 
 vi.mock('../data/npm.js', () => ({
-  getPackageInfo: vi.fn(),
+  getPackageVersionInfo: vi.fn(),
 }))
 
-const { getPackageInfo } = await import('../data/npm.js')
+const { getPackageVersionInfo } = await import('../data/npm.js')
 const { buildLicenseFetcher } = await import('./buildLicenseFetcher.js')
 
-const getInfo = getPackageInfo as unknown as ReturnType<typeof vi.fn>
+const getVersionInfo = getPackageVersionInfo as unknown as ReturnType<
+  typeof vi.fn
+>
 
 describe('buildLicenseFetcher', () => {
   beforeEach(() => {
-    getInfo.mockReset()
+    getVersionInfo.mockReset()
   })
 
   it('字符串形式 license → 原样返回', async () => {
-    getInfo.mockResolvedValueOnce({
+    getVersionInfo.mockResolvedValueOnce({
       name: 'react',
       version: '18',
       license: 'MIT',
@@ -27,7 +29,7 @@ describe('buildLicenseFetcher', () => {
   })
 
   it('对象形式 license { type } → 提取 type 字段', async () => {
-    getInfo.mockResolvedValueOnce({
+    getVersionInfo.mockResolvedValueOnce({
       name: 'old',
       version: '1',
       license: { type: 'Apache-2.0' },
@@ -37,13 +39,13 @@ describe('buildLicenseFetcher', () => {
   })
 
   it('license 字段缺失 → 返回 undefined', async () => {
-    getInfo.mockResolvedValueOnce({ name: 'x', version: '1' })
+    getVersionInfo.mockResolvedValueOnce({ name: 'x', version: '1' })
     const f = buildLicenseFetcher()
     expect(await f.getLicense('x')).toBeUndefined()
   })
 
   it('包不存在 → PackageNotFoundError 透传', async () => {
-    getInfo.mockRejectedValueOnce(new PackageNotFoundError('nope'))
+    getVersionInfo.mockRejectedValueOnce(new PackageNotFoundError('nope'))
     const f = buildLicenseFetcher()
     await expect(f.getLicense('nope')).rejects.toBeInstanceOf(
       PackageNotFoundError,

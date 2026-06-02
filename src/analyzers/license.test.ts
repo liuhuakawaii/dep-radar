@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { PackageJson } from '../types/package.js'
 
 import {
-  analyzeLicenses,
+  analyzeLicensesFromPackage,
   normalizeLicenseField,
   parseLicenseCategory,
   type LicenseFetcher,
@@ -122,7 +122,7 @@ describe('normalizeLicenseField', () => {
 describe('analyzeLicenses', () => {
   it('happy path：MIT 包评级为 low，无 conflict 文案', async () => {
     const fetcher = makeFetcher({ react: 'MIT' })
-    const r = await analyzeLicenses(pkg({ react: '^18' }), fetcher)
+    const r = await analyzeLicensesFromPackage(pkg({ react: '^18' }), fetcher)
     expect(r.licenses).toHaveLength(1)
     expect(r.licenses[0]).toMatchObject({
       name: 'react',
@@ -135,7 +135,7 @@ describe('analyzeLicenses', () => {
 
   it('GPL 包应被评级为 high，并返回项目级冲突规则', async () => {
     const fetcher = makeFetcher({ a: 'MIT', b: 'GPL-3.0' })
-    const r = await analyzeLicenses(pkg({ a: '1', b: '1' }), fetcher)
+    const r = await analyzeLicensesFromPackage(pkg({ a: '1', b: '1' }), fetcher)
     expect(r.licenses.find(l => l.name === 'b')!.risk).toBe('high')
     expect(r.projectConflicts).toHaveLength(1)
     expect(r.projectConflicts[0]!.severity).toBe('high')
@@ -144,7 +144,7 @@ describe('analyzeLicenses', () => {
 
   it('未声明 license → unknown + 提示人工核实', async () => {
     const fetcher = makeFetcher({ x: undefined })
-    const r = await analyzeLicenses(pkg({ x: '1' }), fetcher)
+    const r = await analyzeLicensesFromPackage(pkg({ x: '1' }), fetcher)
     expect(r.licenses[0]).toMatchObject({
       license: 'UNKNOWN',
       licenseType: 'unknown',
@@ -156,29 +156,42 @@ describe('analyzeLicenses', () => {
 
   it('UNLICENSED 应触发 proprietary 冲突规则', async () => {
     const fetcher = makeFetcher({ proprietary: 'UNLICENSED' })
-    const r = await analyzeLicenses(pkg({ proprietary: '1' }), fetcher)
+    const r = await analyzeLicensesFromPackage(
+      pkg({ proprietary: '1' }),
+      fetcher,
+    )
     expect(r.licenses[0]!.licenseType).toBe('proprietary')
     expect(r.projectConflicts.some(c => c.message.includes('私有'))).toBe(true)
   })
 
   it('全部 permissive → 无 projectConflicts', async () => {
     const fetcher = makeFetcher({ a: 'MIT', b: 'Apache-2.0', c: 'ISC' })
-    const r = await analyzeLicenses(pkg({ a: '1', b: '1', c: '1' }), fetcher)
+    const r = await analyzeLicensesFromPackage(
+      pkg({ a: '1', b: '1', c: '1' }),
+      fetcher,
+    )
     expect(r.projectConflicts).toHaveLength(0)
   })
 
   it('单包 fetch 失败 → 加入 skipped，不影响其他', async () => {
     const fetcher = makeFetcher({ ok: 'MIT', bad: 'MIT' }, new Set(['bad']))
-    const r = await analyzeLicenses(pkg({ ok: '1', bad: '1' }), fetcher)
+    const r = await analyzeLicensesFromPackage(
+      pkg({ ok: '1', bad: '1' }),
+      fetcher,
+    )
     expect(r.licenses.map(l => l.name)).toEqual(['ok'])
     expect(r.skipped).toEqual([{ name: 'bad', reason: 'fetch failed for bad' }])
   })
 
   it('includeDev=true 时应包含 devDependencies', async () => {
     const fetcher = makeFetcher({ a: 'MIT', b: 'MIT' })
-    const r = await analyzeLicenses(pkg({ a: '1' }, { b: '1' }), fetcher, {
-      includeDev: true,
-    })
+    const r = await analyzeLicensesFromPackage(
+      pkg({ a: '1' }, { b: '1' }),
+      fetcher,
+      {
+        includeDev: true,
+      },
+    )
     expect(r.licenses.map(l => l.name).sort()).toEqual(['a', 'b'])
   })
 
@@ -188,7 +201,7 @@ describe('analyzeLicenses', () => {
       '@internal/a': 'UNLICENSED',
       '@internal/b': 'UNLICENSED',
     })
-    const r = await analyzeLicenses(
+    const r = await analyzeLicensesFromPackage(
       pkg({ react: '1', '@internal/a': '1', '@internal/b': '1' }),
       fetcher,
       { ignore: ['@internal/*'] },
@@ -200,7 +213,7 @@ describe('analyzeLicenses', () => {
 
   it('SPDX 复合表达式应正确分类：(MIT OR Apache-2.0) → low risk', async () => {
     const fetcher = makeFetcher({ x: '(MIT OR Apache-2.0)' })
-    const r = await analyzeLicenses(pkg({ x: '1' }), fetcher)
+    const r = await analyzeLicensesFromPackage(pkg({ x: '1' }), fetcher)
     expect(r.licenses[0]!.risk).toBe('low')
     expect(r.licenses[0]!.licenseType).toBe('permissive')
   })

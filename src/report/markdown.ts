@@ -10,6 +10,7 @@ import type {
   BundleInfo,
   HealthInfo,
   LicenseInfo,
+  OptimizationSuggestion,
   SecurityInfo,
 } from '../types/analysis.js'
 import {
@@ -27,6 +28,9 @@ export function renderMarkdownReport(report: AnalysisReport): string {
     report.dimensions.health ? renderHealthSection(report.health) : '',
     report.dimensions.license ? renderLicenseSection(report.licenses) : '',
     report.dimensions.security ? renderSecuritySection(report.security) : '',
+    report.dimensions.optimize
+      ? renderOptimizationSection(report.optimizations)
+      : '',
   ]
   return sections.filter(Boolean).join('\n\n') + '\n'
 }
@@ -139,13 +143,16 @@ function renderLicenseSection(licenses: LicenseInfo[]): string {
   const lines = [
     '## 许可证风险',
     '',
-    '| 包名 | 许可证 | 风险 | 说明 |',
-    '|------|--------|------|------|',
+    '| 包名 | 版本 | 许可证 | 风险 | 来源 | 说明 |',
+    '|------|------|--------|------|------|------|',
   ]
 
   for (const l of issues) {
     const risk = l.risk === 'high' ? '**high**' : l.risk
-    lines.push(`| ${l.name} | ${l.license} | ${risk} | ${l.conflict || '—'} |`)
+    const review = l.needsHumanReview ? ' ⚠需审核' : ''
+    lines.push(
+      `| ${l.name}${review} | ${l.version ?? '—'} | ${l.license} | ${risk} | ${l.source ?? '—'} | ${l.conflict || '—'} |`,
+    )
   }
 
   return lines.join('\n')
@@ -160,17 +167,92 @@ function renderSecuritySection(security: SecurityInfo[]): string {
   const lines = [
     '## 安全漏洞',
     '',
-    '| 包名 | 漏洞数 | 最高严重度 | 详情 |',
-    '|------|--------|------------|------|',
+    '| 包名 | 类型 | 范围 | 漏洞数 | 最高严重度 | 详情 |',
+    '|------|------|------|--------|------------|------|',
   ]
 
   for (const s of withVulns) {
+    const direct = s.isDirect ? 'direct' : 'transitive'
+    const scope = s.scope ?? '—'
     const details = s.vulnerabilities
-      .map(v => `${v.severity}: ${v.title}`)
+      .map(v => {
+        const fix = v.fixAvailable ? ' [可修复]' : ' [暂无修复]'
+        const ver = v.fixVersion ? ` → ${v.fixVersion}` : ''
+        return `${v.severity}: ${v.title}${fix}${ver}`
+      })
       .join('; ')
     lines.push(
-      `| ${s.name} | ${s.totalVulnerabilities} | ${s.highestSeverity} | ${details} |`,
+      `| ${s.name} | ${direct} | ${scope} | ${s.totalVulnerabilities} | ${s.highestSeverity} | ${details} |`,
     )
+  }
+
+  return lines.join('\n')
+}
+
+function renderOptimizationSection(opts: OptimizationSuggestion[]): string {
+  if (opts.length === 0) return ''
+
+  const sorted = [...opts].sort((a, b) => {
+    const pri = { high: 3, medium: 2, low: 1 }
+    return (pri[b.priority] ?? 0) - (pri[a.priority] ?? 0)
+  })
+
+  const lines = ['## 优化建议', '']
+
+  for (const o of sorted) {
+    const confBadge = o.confidence ? ` [${o.confidence}]` : ''
+    const actBadge = o.actionability ? ` [${o.actionability}]` : ''
+    const savings =
+      o.estimatedSavings && o.estimatedSavings > 0
+        ? ` (节省 ~${formatBytes(o.estimatedSavings)}${o.estimatedSavingsPercent ? ` ${o.estimatedSavingsPercent}%` : ''})`
+        : ''
+
+    lines.push(
+      `### ${o.priority === 'high' ? '🔴' : o.priority === 'medium' ? '🟡' : '⚪'} ${o.packageName} [${o.type}]${confBadge}${actBadge}${savings}`,
+    )
+    lines.push('')
+    lines.push(o.description)
+
+    if (o.alternative) {
+      lines.push(
+        `- 建议替代: **${o.alternative}** (难度: ${o.difficulty}${o.breakingChange ? ', 破坏性变更' : ''})`,
+      )
+    }
+
+    if (o.evidence && o.evidence.length > 0) {
+      lines.push('- 证据:')
+      for (const ev of o.evidence) {
+        const loc = ev.file
+          ? ` \`${ev.file}${ev.line ? `:${ev.line}` : ''}\``
+          : ''
+        lines.push(`  - ${ev.source}${loc}: ${ev.detail}`)
+      }
+    }
+
+    if (o.preconditions && o.preconditions.length > 0) {
+      for (const p of o.preconditions) {
+        lines.push(`- ⚠ 前提: ${p}`)
+      }
+    }
+
+    if (o.suggestedSteps && o.suggestedSteps.length > 0) {
+      lines.push('- 操作步骤:')
+      o.suggestedSteps.forEach((step, i) => {
+        lines.push(`  ${i + 1}. ${step}`)
+      })
+    }
+
+    if (o.caveats && o.caveats.length > 0) {
+      for (const c of o.caveats) {
+        lines.push(`- ⚠ ${c}`)
+      }
+    }
+
+    if (o.migrationGuide) {
+      lines.push(`- [迁移指南](${o.migrationGuide})`)
+    }
+
+    lines.push('')
   }
 
   return lines.join('\n')

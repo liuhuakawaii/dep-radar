@@ -6,8 +6,11 @@
  * 数据流：
  *   1. 根据包管理器（npm/pnpm/yarn）选择对应的 audit 命令
  *   2. 通过注入的 executor 执行命令并拿到 JSON 输出
- *   3. 按 PM 格式解析为 SecurityInfo[]
+ *   3. 按 PM 格式解析为 SecurityInfo[]（保留 isDirect/via/effects 等原始证据）
  *   4. 聚合最高严重度、漏洞总数等汇总字段
+ *
+ * 默认使用 prod-only 口径（npm audit --omit=dev / pnpm audit --prod），
+ * 传入 includeDev=true 时使用全量 audit。
  *
  * 错误处理：
  *   - audit 命令失败（非零退出码）→ stdout 可能仍是合法 JSON（有漏洞时 npm/pnpm 返回非零）
@@ -50,6 +53,8 @@ export interface SecurityAnalysisResult {
     moderate: number
     low: number
   }
+  /** audit 命令口径（用于报告展示） */
+  auditScope?: string
 }
 
 // =====================================================================
@@ -65,6 +70,13 @@ export async function analyzeSecurity(
 ): Promise<SecurityAnalysisResult> {
   const { ignore } = options
   const ignorePatterns = (ignore ?? []).map(compileIgnorePattern)
+
+  // 记录 audit 口径
+  const auditScope = auditCmd.args.includes('--omit=dev')
+    ? 'prod (--omit=dev)'
+    : auditCmd.args.includes('--prod')
+      ? 'prod (--prod)'
+      : 'all'
 
   let stdout: string
   try {
@@ -93,6 +105,7 @@ export async function analyzeSecurity(
           },
         ],
         summary: { critical: 0, high: 0, moderate: 0, low: 0 },
+        auditScope,
       }
     }
   }
@@ -111,6 +124,7 @@ export async function analyzeSecurity(
         },
       ],
       summary: { critical: 0, high: 0, moderate: 0, low: 0 },
+      auditScope,
     }
   }
 
@@ -129,7 +143,7 @@ export async function analyzeSecurity(
     }
   }
 
-  return { security, skipped: [], summary }
+  return { security, skipped: [], summary, auditScope }
 }
 
 // =====================================================================
@@ -140,6 +154,14 @@ export async function analyzeSecurity(
 interface ParsedAuditEntry {
   name: string
   vulnerabilities: Vulnerability[]
+  /** 是否为直接依赖 */
+  isDirect?: boolean
+  /** 漏洞范围 */
+  scope?: 'prod' | 'dev' | 'mixed' | 'unknown'
+  /** 受影响版本范围 */
+  range?: string
+  /** 从 root 到漏洞包的路径 */
+  nodes?: string[]
 }
 
 /**
@@ -196,6 +218,11 @@ interface NpmAuditVulnerability {
   title?: string
   url?: string
   fixAvailable?: boolean | { name: string; version: string }
+  isDirect?: boolean
+  range?: string
+  via?: Array<string | { name?: string; url?: string; title?: string }>
+  effects?: string[]
+  nodes?: string[]
 }
 
 interface NpmAuditData {
@@ -203,24 +230,49 @@ interface NpmAuditData {
 }
 
 /**
- * npm audit --json 输出格式：
- * { "vulnerabilities": { "lodash": { "severity": "high", "title": "...", ... } } }
+ * npm audit --json 输出格式（v7+）：
+ * {
+ *   "vulnerabilities": {
+ *     "lodash": {
+ *       "severity": "high",
+ *       "isDirect": true,
+ *       "range": "<4.17.21",
+ *       "via": ["CVE-2021-23337"],
+ *       "effects": [],
+ *       "nodes": ["node_modules/lodash"],
+ *       "fixAvailable": { "name": "lodash", "version": "4.17.21" }
+ *     }
+ *   }
+ * }
  */
 function parseNpmAudit(data: unknown): ParsedAuditEntry[] {
   const d = data as NpmAuditData
   if (!d.vulnerabilities || typeof d.vulnerabilities !== 'object') return []
 
-  return Object.entries(d.vulnerabilities).map(([name, vuln]) => ({
-    name,
-    vulnerabilities: [
-      {
-        severity: normalizeSeverity(vuln.severity),
-        title: vuln.title ?? `${name} 安全漏洞`,
-        url: vuln.url ?? '',
-        fixAvailable: normalizeFixAvailable(vuln.fixAvailable),
-      },
-    ],
-  }))
+  return Object.entries(d.vulnerabilities).map(([name, vuln]) => {
+    const { fixAvailable, fixVersion } = extractFixInfo(vuln.fixAvailable)
+    const via = extractVia(vuln.via)
+
+    return {
+      name,
+      vulnerabilities: [
+        {
+          severity: normalizeSeverity(vuln.severity),
+          title: vuln.title ?? `${name} 安全漏洞`,
+          url: vuln.url ?? '',
+          fixAvailable,
+          fixVersion,
+          range: vuln.range,
+          via,
+          effects: vuln.effects,
+        },
+      ],
+      isDirect: vuln.isDirect,
+      scope: vuln.isDirect ? 'prod' : 'unknown',
+      range: vuln.range,
+      nodes: vuln.nodes,
+    }
+  })
 }
 
 // ----- pnpm -----
@@ -242,6 +294,10 @@ interface PnpmAuditData {
     title?: string
     url?: string
     fixAvailable?: boolean
+    isDirect?: boolean
+    range?: string
+    via?: string[]
+    effects?: string[]
   }>
 }
 
@@ -259,40 +315,54 @@ function parsePnpmAudit(data: unknown): ParsedAuditEntry[] {
 
   // 新格式（pnpm >= 9）
   if (Array.isArray(d.vulnerabilities)) {
-    const byName = new Map<string, Vulnerability[]>()
+    const byName = new Map<string, ParsedAuditEntry>()
     for (const v of d.vulnerabilities) {
-      const list = byName.get(v.name) ?? []
-      list.push({
+      const existing = byName.get(v.name)
+      const vuln: Vulnerability = {
         severity: normalizeSeverity(v.severity),
         title: v.title ?? `${v.name} 安全漏洞`,
         url: v.url ?? '',
         fixAvailable: v.fixAvailable ?? false,
-      })
-      byName.set(v.name, list)
+        range: v.range,
+        via: v.via,
+        effects: v.effects,
+      }
+      if (existing) {
+        existing.vulnerabilities.push(vuln)
+      } else {
+        byName.set(v.name, {
+          name: v.name,
+          vulnerabilities: [vuln],
+          isDirect: v.isDirect,
+          scope: v.isDirect ? 'prod' : 'unknown',
+          range: v.range,
+        })
+      }
     }
-    return Array.from(byName.entries()).map(([name, vulnerabilities]) => ({
-      name,
-      vulnerabilities,
-    }))
+    return Array.from(byName.values())
   }
 
   // 旧格式
   if (d.advisories && typeof d.advisories === 'object') {
-    const byName = new Map<string, Vulnerability[]>()
+    const byName = new Map<string, ParsedAuditEntry>()
     for (const adv of Object.values(d.advisories)) {
-      const list = byName.get(adv.module_name) ?? []
-      list.push({
+      const existing = byName.get(adv.module_name)
+      const vuln: Vulnerability = {
         severity: normalizeSeverity(adv.severity),
         title: adv.title ?? `${adv.module_name} 安全漏洞`,
         url: adv.url ?? '',
         fixAvailable: Boolean(adv.patched_versions),
-      })
-      byName.set(adv.module_name, list)
+      }
+      if (existing) {
+        existing.vulnerabilities.push(vuln)
+      } else {
+        byName.set(adv.module_name, {
+          name: adv.module_name,
+          vulnerabilities: [vuln],
+        })
+      }
     }
-    return Array.from(byName.entries()).map(([name, vulnerabilities]) => ({
-      name,
-      vulnerabilities,
-    }))
+    return Array.from(byName.values())
   }
 
   return []
@@ -308,6 +378,10 @@ interface YarnAuditData {
       title?: string
       url?: string
       fixAvailable?: boolean
+      isDirect?: boolean
+      range?: string
+      via?: string[]
+      effects?: string[]
     }
   >
 }
@@ -335,8 +409,14 @@ function parseYarnAudit(data: unknown): ParsedAuditEntry[] {
           title: vuln.title ?? `${name} 安全漏洞`,
           url: vuln.url ?? '',
           fixAvailable: vuln.fixAvailable ?? false,
+          range: vuln.range,
+          via: vuln.via,
+          effects: vuln.effects,
         },
       ],
+      isDirect: vuln.isDirect,
+      scope: vuln.isDirect ? 'prod' : 'unknown',
+      range: vuln.range,
     }))
   }
 
@@ -368,25 +448,29 @@ interface YarnClassicAuditLine {
  * 只取 type="auditAdvisory" 的行。
  */
 function parseYarnClassicAuditNdjson(lines: unknown[]): ParsedAuditEntry[] {
-  const byName = new Map<string, Vulnerability[]>()
+  const byName = new Map<string, ParsedAuditEntry>()
   for (const line of lines) {
     const obj = line as YarnClassicAuditLine
     if (obj.type !== 'auditAdvisory' || !obj.data?.advisory) continue
     const adv = obj.data.advisory
     const name = adv.module_name ?? 'unknown'
-    const list = byName.get(name) ?? []
-    list.push({
+    const existing = byName.get(name)
+    const vuln: Vulnerability = {
       severity: normalizeSeverity(adv.severity ?? 'low'),
       title: adv.title ?? `${name} 安全漏洞`,
       url: adv.url ?? '',
       fixAvailable: Boolean(adv.patched_versions),
-    })
-    byName.set(name, list)
+    }
+    if (existing) {
+      existing.vulnerabilities.push(vuln)
+    } else {
+      byName.set(name, {
+        name,
+        vulnerabilities: [vuln],
+      })
+    }
   }
-  return Array.from(byName.entries()).map(([name, vulnerabilities]) => ({
-    name,
-    vulnerabilities,
-  }))
+  return Array.from(byName.values())
 }
 
 // =====================================================================
@@ -410,12 +494,37 @@ function normalizeSeverity(raw: RawSeverity): Vulnerability['severity'] {
   return 'low'
 }
 
-function normalizeFixAvailable(
+/**
+ * 从 fixAvailable 提取布尔值和修复版本
+ */
+function extractFixInfo(
   raw: boolean | { name: string; version: string } | undefined,
-): boolean {
-  if (typeof raw === 'boolean') return raw
-  if (raw && typeof raw === 'object') return true
-  return false
+): { fixAvailable: boolean; fixVersion?: string } {
+  if (typeof raw === 'boolean') return { fixAvailable: raw }
+  if (raw && typeof raw === 'object') {
+    return { fixAvailable: true, fixVersion: raw.version }
+  }
+  return { fixAvailable: false }
+}
+
+/**
+ * 从 via 数组提取漏洞来源
+ *
+ * via 可能是：
+ * - string[]: CVE 或其他漏洞名
+ * - Array<{ url, title }>: advisory 对象
+ * - 混合
+ */
+function extractVia(
+  raw:
+    | Array<string | { name?: string; url?: string; title?: string }>
+    | undefined,
+): string[] | undefined {
+  if (!raw || raw.length === 0) return undefined
+  return raw.map(item => {
+    if (typeof item === 'string') return item
+    return item.title ?? item.name ?? item.url ?? 'unknown'
+  })
 }
 
 function buildSecurityInfo(entry: ParsedAuditEntry): SecurityInfo {
@@ -442,6 +551,9 @@ function buildSecurityInfo(entry: ParsedAuditEntry): SecurityInfo {
     vulnerabilities: entry.vulnerabilities,
     totalVulnerabilities,
     highestSeverity: highest,
+    scope: entry.scope,
+    isDirect: entry.isDirect,
+    dependencyPaths: entry.nodes,
   }
 }
 

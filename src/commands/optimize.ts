@@ -3,9 +3,10 @@
  *
  * 流程：
  *   1. 加载配置 + 读 package.json
- *   2. **并行**跑四个 analyzer（避免依赖串行带来的等待）
- *   3. 把结果喂给 generateOptimizations
- *   4. 把建议填到 AnalysisReport.optimizations 后渲染
+ *   2. 构建 DependencyInventory（统一事实来源）
+ *   3. **并行**跑四个 analyzer（避免依赖串行带来的等待）
+ *   4. 把结果喂给 generateOptimizations
+ *   5. 把建议填到 AnalysisReport.optimizations 后渲染
  *
  * 与 analyze 命令的关系：
  *   - analyze 是单维度详查（终端表格友好）
@@ -25,14 +26,21 @@ import ora from 'ora'
 
 const execFileP = promisify(execFile)
 
+import { analyzeBuildArtifacts } from '../analyzers/buildArtifacts.js'
 import { analyzeBundleSize } from '../analyzers/bundle.js'
+import { classifyDependencies } from '../analyzers/classifier.js'
+import { detectDuplicateVersions } from '../analyzers/duplicateVersions.js'
+import { detectHygieneIssues } from '../analyzers/dependencyHygiene.js'
 import { analyzeHealth } from '../analyzers/health.js'
+import { buildInventory } from '../analyzers/inventory.js'
 import { analyzeLicenses } from '../analyzers/license.js'
+import { analyzeReachability } from '../analyzers/reachability.js'
 import { analyzeSecurity, type AuditExecutor } from '../analyzers/security.js'
 import { generateOptimizations } from '../analyzers/optimizer.js'
 import { loadUserConfig } from '../config/loader.js'
 import { ConfigError, PackageNotFoundError } from '../errors/index.js'
 import type { AnalysisReport } from '../types/analysis.js'
+import type { DependencyInventory } from '../types/inventory.js'
 import { EXIT_CODES, type ExitCode } from '../utils/exitCode.js'
 import { readPackageJson } from '../utils/fs.js'
 import { stripAnsi } from '../utils/format.js'
@@ -62,6 +70,10 @@ export interface OptimizeOptions {
   skipLicense?: boolean
   /** 跳过 security 维度（仅基于 size + health + license + 内置规则） */
   skipSecurity?: boolean
+  /** 体积分析范围：runtime（默认）/ all / non-runtime */
+  scope?: 'runtime' | 'all' | 'non-runtime'
+  statsFile?: string
+  assetsDir?: string
   /** CLI 全局选项中的缓存开关（--no-cache 时为 false） */
   cacheEnabled?: boolean
   /** CLI 全局选项中的缓存目录 */
@@ -83,6 +95,9 @@ export async function optimizeCommand(
     skipHealth = false,
     skipLicense = false,
     skipSecurity = false,
+    scope = 'runtime',
+    statsFile,
+    assetsDir,
     cacheEnabled,
     cacheDir,
     registry,
@@ -128,12 +143,75 @@ export async function optimizeCommand(
   // concurrency 优先级：CLI --concurrency > config.concurrency > 默认 5
   const resolvedConcurrency = concurrency ?? config.concurrency ?? 5
 
+  // ----------- 1.5 构建 DependencyInventory -----------
+  const spinner = ora('正在解析依赖清单...').start()
+  let inventory: DependencyInventory
+  try {
+    inventory = await buildInventory(projectPath, pkg, {
+      includeDev,
+      ignore: config.ignore,
+    })
+    spinner.succeed(
+      `依赖清单解析完成（${inventory.directCount} 直接 + ${inventory.transitiveCount} 传递，来源：${inventory.resolvedFrom}）`,
+    )
+    for (const w of inventory.warnings) {
+      logger.warn(`[inventory] ${w}`)
+    }
+  } catch (err) {
+    spinner.fail('依赖清单解析失败')
+    logger.error(err instanceof Error ? err.message : String(err))
+    return EXIT_CODES.ERROR
+  }
+
+  // ----------- 1.6 源码可达性分析 -----------
+  let reachabilityResults: Awaited<ReturnType<typeof analyzeReachability>> = []
+  try {
+    reachabilityResults = await analyzeReachability(
+      projectPath,
+      inventory.entries,
+      {
+        srcGlobs: config.classification?.runtimeEntryGlobs,
+      },
+    )
+    if (reachabilityResults.length > 0) {
+      logger.info(`可达性分析：${reachabilityResults.length} 个包被源码引用`)
+    }
+  } catch (err) {
+    logger.warn(
+      `可达性分析失败（跳过）：${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+
+  // ----------- 1.7 依赖分类 -----------
+  const entries = classifyDependencies(inventory.entries, pkg, {
+    overrides: config.classification?.overrides,
+    reachabilityResults,
+  })
+  inventory.entries = entries
+
+  // 分类统计
+  const classified = {
+    runtime: 0,
+    build: 0,
+    test: 0,
+    script: 0,
+    config: 0,
+    unknown: 0,
+  }
+  for (const e of entries) {
+    if (e.usageClass) classified[e.usageClass]++
+  }
+
   // ----------- 2. 并行跑四个 analyzer -----------
-  // yarn classic 使用不同的 audit 命令
-  let auditCmd = PM_COMMANDS[pm].audit
+  // 根据 includeDev 选择 audit 命令：prod-only 或全量
+  let auditCmd = includeDev ? PM_COMMANDS[pm].auditAll : PM_COMMANDS[pm].audit
   if (pm === 'yarn') {
     const yarnVersion = await detectYarnVersion(projectPath)
-    if (yarnVersion === 'classic') auditCmd = YARN_CLASSIC_COMMANDS.audit
+    if (yarnVersion === 'classic') {
+      auditCmd = includeDev
+        ? YARN_CLASSIC_COMMANDS.auditAll
+        : YARN_CLASSIC_COMMANDS.audit
+    }
   }
   const defaultAuditExecutor: AuditExecutor = {
     async execute(cmd, args, cwd) {
@@ -144,11 +222,11 @@ export async function optimizeCommand(
     },
   }
 
-  const spinner = ora('正在跑全维度分析...').start()
+  const analysisSpinner = ora('正在跑全维度分析...').start()
   let bundles, healthList, licenses, securityResult
   try {
     const bundleP = analyzeBundleSize(
-      pkg,
+      entries,
       buildBundleFetcher({
         dataSource: config.dataSource,
         cache,
@@ -156,37 +234,37 @@ export async function optimizeCommand(
       }),
       {
         concurrency: resolvedConcurrency,
-        includeDev,
+        scope,
         ignore: config.ignore,
         onProgress: ({ current, total, name }) => {
-          spinner.text = `正在分析体积 [${current}/${total}] ${name}...`
+          analysisSpinner.text = `正在分析体积 [${current}/${total}] ${name}...`
         },
       },
     )
     const healthP = skipHealth
       ? Promise.resolve({ health: [], skipped: [] })
       : analyzeHealth(
-          pkg,
+          entries,
           buildHealthFetcher({ cache, registry: resolvedRegistry }),
           {
             concurrency: resolvedConcurrency,
-            includeDev,
-            ignore: config.ignore,
             healthWeights: config.healthWeights,
             onProgress: ({ current, total, name }) => {
-              spinner.text = `正在分析健康度 [${current}/${total}] ${name}...`
+              analysisSpinner.text = `正在分析健康度 [${current}/${total}] ${name}...`
             },
           },
         )
     const licenseP = skipLicense
       ? Promise.resolve({ licenses: [], projectConflicts: [], skipped: [] })
       : analyzeLicenses(
-          pkg,
-          buildLicenseFetcher({ cache, registry: resolvedRegistry }),
+          entries,
+          buildLicenseFetcher({
+            cache,
+            registry: resolvedRegistry,
+            projectPath,
+          }),
           {
             concurrency: resolvedConcurrency,
-            includeDev,
-            ignore: config.ignore,
           },
         )
     const securityP = skipSecurity
@@ -206,24 +284,70 @@ export async function optimizeCommand(
       licenseP,
       securityP,
     ])
-    spinner.succeed('分析完成')
+    analysisSpinner.succeed('分析完成')
     bundles = bRes
     healthList = hRes
     licenses = lRes
     securityResult = sRes
   } catch (err) {
-    spinner.fail('分析失败')
+    analysisSpinner.fail('分析失败')
     logger.error(err instanceof Error ? err.message : String(err))
     return EXIT_CODES.ERROR
   }
 
+  // ----------- 2.8 依赖卫生检测 -----------
+  const hygieneIssues = detectHygieneIssues(entries, reachabilityResults)
+  if (hygieneIssues.length > 0) {
+    logger.info(
+      `依赖卫生：${hygieneIssues.length} 个问题（${hygieneIssues.filter(i => i.type === 'unused-direct').length} unused，${hygieneIssues.filter(i => i.type === 'misplaced-dependency').length} misplaced）`,
+    )
+  }
+
+  // ----------- 2.9 多版本检测 -----------
+  const duplicateVersions = detectDuplicateVersions(entries)
+  if (duplicateVersions.length > 0) {
+    logger.info(`多版本检测：${duplicateVersions.length} 个包存在多版本并存`)
+  }
+
+  // ----------- 2.95 构建产物分析（可选） -----------
+  const effectiveStatsFile = statsFile ?? config.buildArtifacts?.statsFile
+  const effectiveAssetsDir = assetsDir ?? config.buildArtifacts?.assetsDir
+  let buildArtifactResult:
+    | Awaited<ReturnType<typeof analyzeBuildArtifacts>>
+    | undefined
+  if (effectiveStatsFile || effectiveAssetsDir) {
+    try {
+      buildArtifactResult = await analyzeBuildArtifacts(projectPath, {
+        statsFile: effectiveStatsFile,
+        assetsDir: effectiveAssetsDir,
+      })
+      if (buildArtifactResult.source !== 'none') {
+        logger.info(
+          `构建产物分析：${buildArtifactResult.source}，${buildArtifactResult.assets.length} 个资源`,
+        )
+      }
+    } catch (err) {
+      logger.warn(
+        `构建产物分析失败（跳过）：${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+
   // ----------- 3. 生成 optimization -----------
+  // 构建 usageClassMap
+  const usageClassMap = new Map<string, string>()
+  for (const e of entries) {
+    if (e.usageClass) usageClassMap.set(e.name, e.usageClass)
+  }
+
   const optimizations = generateOptimizations({
     bundles: bundles.bundles,
     health: healthList.health,
     licenses: licenses.licenses,
     security: securityResult.security,
     userReplacements: config.replacements,
+    reachabilityResults,
+    usageClassMap,
   })
 
   // ----------- 4. 组装报告 -----------
@@ -231,6 +355,7 @@ export async function optimizeCommand(
     project: pkg.name,
     timestamp: new Date().toISOString(),
     packageManager: pm,
+    inventory,
     dimensions: {
       size: true,
       health: !skipHealth,
@@ -247,12 +372,16 @@ export async function optimizeCommand(
       licenseIssues: licenses.licenses.filter(l => l.risk !== 'low').length,
       optimizationCount: optimizations.length,
       deprecatedCount: healthList.health.filter(h => h.deprecated).length,
+      classified,
     },
     bundles: bundles.bundles,
     health: healthList.health,
     licenses: licenses.licenses,
     security: securityResult.security,
     optimizations,
+    hygieneIssues,
+    duplicateVersions,
+    buildArtifacts: buildArtifactResult,
   }
 
   // ----------- 5. 输出 -----------

@@ -15,6 +15,7 @@ export interface PackageJson {
   devDependencies?: Record<string, string>
   peerDependencies?: Record<string, string>
   optionalDependencies?: Record<string, string>
+  scripts?: Record<string, string>
   /** monorepo workspace 配置；支持数组或 { packages: [...] } 两种格式 */
   workspaces?: string[] | { packages: string[] }
 }

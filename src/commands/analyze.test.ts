@@ -14,6 +14,7 @@ vi.mock('../data/bundlephobia.js', () => ({ getPackageSize: vi.fn() }))
 vi.mock('../data/npm.js', () => ({
   getFullPackageInfo: vi.fn(),
   getPackageInfo: vi.fn(),
+  getPackageVersionInfo: vi.fn(),
   getDownloadCount: vi.fn(),
   getDownloadTrend: vi.fn(),
 }))
@@ -26,6 +27,7 @@ const { getPackageSize } = await import('../data/pkg-size.js')
 const {
   getFullPackageInfo,
   getPackageInfo,
+  getPackageVersionInfo,
   getDownloadCount,
   getDownloadTrend,
 } = await import('../data/npm.js')
@@ -38,6 +40,9 @@ const { EXIT_CODES } = await import('../utils/exitCode.js')
 const pkgSize = getPackageSize as unknown as ReturnType<typeof vi.fn>
 const npmFullDoc = getFullPackageInfo as unknown as ReturnType<typeof vi.fn>
 const npmInfo = getPackageInfo as unknown as ReturnType<typeof vi.fn>
+const npmVersionInfo = getPackageVersionInfo as unknown as ReturnType<
+  typeof vi.fn
+>
 const npmDl = getDownloadCount as unknown as ReturnType<typeof vi.fn>
 const npmTrend = getDownloadTrend as unknown as ReturnType<typeof vi.fn>
 const ghRepo = getRepoInfo as unknown as ReturnType<typeof vi.fn>
@@ -50,6 +55,7 @@ describe('analyzeCommand', () => {
     pkgSize.mockReset()
     npmFullDoc.mockReset()
     npmInfo.mockReset()
+    npmVersionInfo.mockReset()
     npmDl.mockReset()
     npmTrend.mockReset()
     ghRepo.mockReset()
@@ -305,7 +311,7 @@ describe('analyzeCommand', () => {
   describe('--only license', () => {
     it('全部 MIT → OK，无 conflict 文案', async () => {
       writePkg({ react: '^18.0.0' })
-      npmInfo.mockResolvedValue({
+      npmVersionInfo.mockResolvedValue({
         name: 'react',
         version: '18.3.1',
         license: 'MIT',
@@ -326,7 +332,7 @@ describe('analyzeCommand', () => {
 
     it('含 GPL-3.0 → LICENSE_CONFLICT (4)', async () => {
       writePkg({ a: '^1.0.0', b: '^1.0.0' })
-      npmInfo.mockImplementation(async (name: string) => {
+      npmVersionInfo.mockImplementation(async (name: string) => {
         if (name === 'a') return { name: 'a', version: '1', license: 'MIT' }
         return { name: 'b', version: '1', license: 'GPL-3.0' }
       })

@@ -18,9 +18,9 @@ import ora from 'ora'
 
 const execFileP = promisify(execFile)
 
-import { analyzeBundleSize } from '../analyzers/bundle.js'
-import { analyzeHealth } from '../analyzers/health.js'
-import { analyzeLicenses } from '../analyzers/license.js'
+import { analyzeBundleSizeFromPackage } from '../analyzers/bundle.js'
+import { analyzeHealthFromPackage } from '../analyzers/health.js'
+import { analyzeLicensesFromPackage } from '../analyzers/license.js'
 import type { BundleInfo, HealthInfo, LicenseInfo } from '../types/analysis.js'
 import type { PackageJson } from '../types/package.js'
 import { EXIT_CODES, type ExitCode } from '../utils/exitCode.js'
@@ -201,7 +201,7 @@ export async function compareCommand(
     const spinner = ora('正在分析基准项目体积...').start()
     let bundlesA: BundleInfo[]
     try {
-      const result = await analyzeBundleSize(pkgA, fetcher, {
+      const result = await analyzeBundleSizeFromPackage(pkgA, fetcher, {
         concurrency,
         includeDev,
       })
@@ -215,7 +215,7 @@ export async function compareCommand(
     spinner.start('正在分析对比项目体积...')
     let bundlesB: BundleInfo[]
     try {
-      const result = await analyzeBundleSize(pkgB, fetcher, {
+      const result = await analyzeBundleSizeFromPackage(pkgB, fetcher, {
         concurrency,
         includeDev,
       })
@@ -236,8 +236,8 @@ export async function compareCommand(
     try {
       const fetcher = buildHealthFetcher({ registry })
       const [hA, hB] = await Promise.all([
-        analyzeHealth(pkgA, fetcher, { concurrency, includeDev }),
-        analyzeHealth(pkgB, fetcher, { concurrency, includeDev }),
+        analyzeHealthFromPackage(pkgA, fetcher, { concurrency, includeDev }),
+        analyzeHealthFromPackage(pkgB, fetcher, { concurrency, includeDev }),
       ])
       const healthResult = diffHealth(hA.health, hB.health)
       sections.push(renderHealthSection(healthResult))
@@ -256,8 +256,8 @@ export async function compareCommand(
     try {
       const fetcher = buildLicenseFetcher({ registry })
       const [lA, lB] = await Promise.all([
-        analyzeLicenses(pkgA, fetcher),
-        analyzeLicenses(pkgB, fetcher),
+        analyzeLicensesFromPackage(pkgA, fetcher),
+        analyzeLicensesFromPackage(pkgB, fetcher),
       ])
       const licenseResult = diffLicenses(lA.licenses, lB.licenses)
       sections.push(renderLicenseSection(licenseResult))

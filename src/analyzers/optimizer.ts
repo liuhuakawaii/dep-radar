@@ -31,6 +31,7 @@ import type {
   SecurityInfo,
 } from '../types/analysis.js'
 import type { ReplacementRule } from '../types/config.js'
+import type { ReachabilityResult } from './reachability.js'
 
 // =====================================================================
 // 公开类型
@@ -43,6 +44,10 @@ export interface OptimizerInput {
   security: SecurityInfo[]
   /** 用户自定义替代方案；会与内置 REPLACEMENTS 合并，用户优先 */
   userReplacements?: Record<string, ReplacementRule>
+  /** 可达性分析结果（用于设置置信度和证据） */
+  reachabilityResults?: ReachabilityResult[]
+  /** 依赖分类结果 */
+  usageClassMap?: Map<string, string>
 }
 
 // =====================================================================
@@ -69,11 +74,23 @@ export function generateOptimizations(
   const bundleByName = indexBy(input.bundles, b => b.name)
   const healthByName = indexBy(input.health, h => h.name)
 
+  // 构建可达性索引
+  const reachabilityMap = new Map<string, ReachabilityResult>()
+  if (input.reachabilityResults) {
+    for (const r of input.reachabilityResults) {
+      reachabilityMap.set(r.packageName, r)
+    }
+  }
+
   // ----- 规则 1: deprecated -----
   for (const h of input.health) {
     if (h.deprecated) {
       const bundleSize = bundleByName.get(h.name)?.gzip
       const replace = replacements[h.name]
+      const reach = reachabilityMap.get(h.name)
+      const importCount = reach?.importCount ?? 0
+      const isSingleUse = importCount === 1
+
       mergeSuggestion(acc, {
         packageName: h.name,
         type: 'deprecated',
@@ -82,12 +99,35 @@ export function generateOptimizations(
           (h.deprecatedMessage ?? '该包已被作者标记为 deprecated') +
           (replace ? `；建议替换为 ${replace.alternative}` : ''),
         alternative: replace?.alternative,
-        difficulty: replace?.difficulty ?? 'medium',
+        difficulty: isSingleUse ? 'low' : (replace?.difficulty ?? 'medium'),
         breakingChange: replace?.breakingChange ?? true,
         estimatedSavings: estimateSavings(bundleSize, replace),
         estimatedSavingsPercent: replace?.estimatedSavingsPercent,
         caveats: replace?.caveats,
         migrationGuide: replace?.migrationGuide,
+        confidence: 'high',
+        actionability: replace ? 'ready' : 'needs-review',
+        evidence: [
+          {
+            source: 'npm-registry',
+            detail: h.deprecatedMessage ?? '标记为 deprecated',
+          },
+          ...(reach
+            ? [
+                {
+                  source: 'reachability' as const,
+                  detail: `在 ${importCount} 个源文件中被引用${isSingleUse ? '（单点使用，迁移成本低）' : ''}`,
+                },
+              ]
+            : []),
+        ],
+        suggestedSteps: replace
+          ? [
+              `安装 ${replace.alternative}`,
+              `将 ${h.name} 的 import 替换为 ${replace.alternative}`,
+              `运行测试确认功能正常`,
+            ]
+          : [`评估 ${h.name} 的功能是否必需`, `寻找替代方案或自行实现`],
       })
     }
   }
@@ -96,19 +136,52 @@ export function generateOptimizations(
   for (const [name, rule] of Object.entries(replacements)) {
     if (!isInDeps(name, input)) continue
     const bundleSize = bundleByName.get(name)?.gzip
+    const reach = reachabilityMap.get(name)
+    const importCount = reach?.importCount ?? 0
+    const usageClass = input.usageClassMap?.get(name)
+
+    // 根据使用面调整难度
+    let adjustedDifficulty = rule.difficulty
+    if (importCount > 10 && rule.difficulty === 'low') {
+      adjustedDifficulty = 'medium' // 大量使用时不能标为低难度
+    }
+
     const priority = decideReplacementPriority(bundleSize, rule)
+
     mergeSuggestion(acc, {
       packageName: name,
       type: 'replace',
       priority,
       description: rule.description,
       alternative: rule.alternative,
-      difficulty: rule.difficulty,
+      difficulty: adjustedDifficulty,
       breakingChange: rule.breakingChange,
       estimatedSavings: estimateSavings(bundleSize, rule),
       estimatedSavingsPercent: rule.estimatedSavingsPercent,
       caveats: rule.caveats,
       migrationGuide: rule.migrationGuide,
+      confidence: reach ? 'high' : 'medium',
+      actionability: 'ready',
+      evidence: [
+        { source: 'replacement-rule', detail: rule.description },
+        ...(reach
+          ? [
+              {
+                source: 'reachability' as const,
+                detail: `在 ${importCount} 个源文件中被引用`,
+              },
+            ]
+          : []),
+        ...(usageClass
+          ? [{ source: 'classifier' as const, detail: `分类为 ${usageClass}` }]
+          : []),
+      ],
+      assumptions: rule.caveats,
+      suggestedSteps: [
+        `安装 ${rule.alternative}`,
+        `参考迁移指南替换 ${name} 的用法`,
+        `运行测试确认功能正常`,
+      ],
     })
   }
 
@@ -116,14 +189,40 @@ export function generateOptimizations(
   for (const b of input.bundles) {
     if (b.gzip <= LARGE_BUNDLE_THRESHOLD) continue
     if (replacements[b.name]) continue // 已被规则 2 处理
+    const reach = reachabilityMap.get(b.name)
+    const importCount = reach?.importCount ?? 0
+    const usageClass = input.usageClassMap?.get(b.name)
+
+    // build/test/script 类不参与体积报警
+    if (usageClass && usageClass !== 'runtime' && usageClass !== 'unknown')
+      continue
+
     mergeSuggestion(acc, {
       packageName: b.name,
       type: 'replace',
       priority: b.gzip > LARGE_BUNDLE_THRESHOLD * 2 ? 'high' : 'medium',
       description: `gzip 体积 ${(b.gzip / 1024).toFixed(1)}KB，超过阈值 ${LARGE_BUNDLE_THRESHOLD / 1024}KB；建议评估是否有更轻量的替代方案或按需引入`,
-      difficulty: 'medium',
+      difficulty: importCount > 10 ? 'high' : 'medium',
       breakingChange: false,
       estimatedSavings: 0,
+      confidence: reach ? 'medium' : 'low',
+      actionability: 'needs-review',
+      evidence: [
+        {
+          source: 'bundle-analysis',
+          detail: `gzip ${(b.gzip / 1024).toFixed(1)}KB`,
+        },
+        ...(reach
+          ? [
+              {
+                source: 'reachability' as const,
+                detail: `在 ${importCount} 个源文件中被引用`,
+              },
+            ]
+          : []),
+      ],
+      assumptions: ['体积为包级估算，非项目 bundle 实际贡献'],
+      preconditions: ['需确认该包是否可通过 tree-shaking 或按需引入减少体积'],
     })
   }
 
@@ -145,6 +244,14 @@ export function generateOptimizations(
       estimatedSavingsPercent: replace?.estimatedSavingsPercent,
       caveats: replace?.caveats,
       migrationGuide: replace?.migrationGuide,
+      confidence: 'medium',
+      actionability: 'needs-review',
+      evidence: [
+        {
+          source: 'health-analysis',
+          detail: `健康度 ${h.healthScore}/100（${describeWhyLow(h)}）`,
+        },
+      ],
     })
   }
 
@@ -162,6 +269,18 @@ export function generateOptimizations(
       difficulty: replace?.difficulty ?? 'high',
       breakingChange: replace?.breakingChange ?? true,
       estimatedSavings: estimateSavings(bundleSize, replace),
+      confidence: 'high',
+      actionability: 'needs-review',
+      evidence: [
+        {
+          source: 'license-analysis',
+          detail: `license=${l.license}，${l.conflict ?? ''}`,
+        },
+        ...(l.source
+          ? [{ source: 'license-source' as const, detail: `来源: ${l.source}` }]
+          : []),
+      ],
+      preconditions: ['需确认项目的 license 合规要求'],
     })
   }
 
@@ -183,13 +302,28 @@ export function generateOptimizations(
       difficulty: replace?.difficulty ?? 'medium',
       breakingChange: replace?.breakingChange ?? true,
       estimatedSavings: estimateSavings(bundleSize, replace),
+      confidence: 'high',
+      actionability: s.isDirect ? 'ready' : 'needs-review',
+      evidence: [
+        {
+          source: 'security-audit',
+          detail: `${s.totalVulnerabilities} 个漏洞（最高 ${s.highestSeverity}）`,
+        },
+        ...(s.scope
+          ? [{ source: 'audit-scope' as const, detail: `范围: ${s.scope}` }]
+          : []),
+      ],
+      preconditions: s.isDirect ? [] : ['需先升级引入该漏洞的直接依赖'],
+      suggestedSteps: s.isDirect
+        ? [`检查 ${s.name} 是否有修复版本`, `如无修复方案，寻找替代包`]
+        : [`定位引入 ${s.name} 的直接依赖`, `升级该直接依赖到修复版本`],
     })
   }
 
   // 辅助：避免无效引用警告（healthByName 仅作语义自检入口）
   void healthByName
 
-  // 排序
+  // 排序：ready + high confidence + high impact 优先
   return [...acc.values()].sort((a, b) => scoreOf(b) - scoreOf(a))
 }
 
@@ -278,7 +412,14 @@ function maxOpt(a?: number, b?: number): number | undefined {
 
 function scoreOf(s: OptimizationSuggestion): number {
   const pri = { high: 3, medium: 2, low: 1 } as const
-  return pri[s.priority] * 1000 + (s.estimatedSavings ?? 0)
+  const act = { ready: 3, 'needs-review': 2, info: 1 } as const
+  const conf = { high: 3, medium: 2, low: 1 } as const
+  return (
+    pri[s.priority] * 10000 +
+    act[s.actionability ?? 'info'] * 1000 +
+    conf[s.confidence ?? 'low'] * 100 +
+    (s.estimatedSavings ?? 0)
+  )
 }
 
 function estimateSavings(

@@ -1,21 +1,22 @@
 /**
  * 包体积分析器
  *
- * 输入：PackageJson + 一个 BundleFetcher（数据源由调用方注入）
+ * 输入：DependencyEntry[]（来自 DependencyInventory）+ BundleFetcher（数据源由调用方注入）
  * 输出：每个依赖的 BundleInfo + 总体积 + topN 体积大户
  *
  * 设计要点：
  * - 依赖注入：analyzer 不直接 import 数据源，便于测试与多源 fallback
  * - 并发控制：用 p-limit 控制并发数，避免触发 API 限流
  * - 容错：单个包获取失败不阻断整体分析，标记为 source='unknown'
- * - 协议过滤：跳过 workspace:/file:/link:/git: 等非 npm 标准依赖
- * - ignore 支持：精确匹配 + 末尾 `*` 通配符（如 `@internal/*`）
+ * - 版本来源：使用 inventory 中的 resolvedVersion（lockfile / node_modules），而非声明版本
  */
 
 import pLimit from 'p-limit'
 
 import type { BundleInfo } from '../types/analysis.js'
+import type { DependencyEntry } from '../types/inventory.js'
 import type { PackageJson } from '../types/package.js'
+import { buildIgnoreMatcher } from '../utils/ignore.js'
 
 /**
  * 数据源接口：根据包名与版本号返回 BundleInfo
@@ -35,6 +36,14 @@ export interface AnalyzeBundleOptions {
   topN?: number
   /** 是否同时分析 devDependencies，默认 false（只看运行时） */
   includeDev?: boolean
+  /**
+   * 分析范围过滤
+   *
+   * - 'runtime': 只分析 runtime 和 unknown 的包（默认）
+   * - 'all': 分析所有包（旧行为）
+   * - 'non-runtime': 只分析 build/test/script/config 的包
+   */
+  scope?: 'runtime' | 'all' | 'non-runtime'
   /**
    * 忽略的包名模式列表
    *
@@ -69,10 +78,130 @@ export interface BundleAnalysisResult {
 }
 
 // =====================================================================
-// 主函数
+// 主函数（新版：接受 DependencyEntry[]）
 // =====================================================================
 
 export async function analyzeBundleSize(
+  entries: DependencyEntry[],
+  fetchSize: BundleFetcher,
+  options: AnalyzeBundleOptions = {},
+): Promise<BundleAnalysisResult> {
+  const {
+    concurrency = 5,
+    topN = 10,
+    ignore = [],
+    scope = 'runtime',
+    onProgress,
+    onResult,
+  } = options
+
+  const limit = pLimit(Math.max(1, concurrency))
+  const isIgnored = buildIgnoreMatcher(ignore)
+
+  const skipped: Array<{ name: string; reason: string }> = []
+  const bundles: BundleInfo[] = []
+
+  // 过滤 + 准备 fetch 列表
+  const toFetch: Array<{ name: string; packageName: string; version: string }> =
+    []
+  for (const entry of entries) {
+    if (isIgnored(entry.name)) {
+      skipped.push({ name: entry.name, reason: '被 ignore 配置匹配' })
+      continue
+    }
+
+    // scope 过滤：根据 usageClass 决定是否参与体积分析
+    if (scope !== 'all' && entry.usageClass) {
+      const isRuntime =
+        entry.usageClass === 'runtime' || entry.usageClass === 'unknown'
+      if (scope === 'runtime' && !isRuntime) {
+        skipped.push({
+          name: entry.name,
+          reason: `分类为 ${entry.usageClass}，不在 runtime 分析范围内`,
+        })
+        continue
+      }
+      if (scope === 'non-runtime' && isRuntime) {
+        skipped.push({
+          name: entry.name,
+          reason: `分类为 ${entry.usageClass}，不在 non-runtime 分析范围内`,
+        })
+        continue
+      }
+    }
+
+    // 跳过非 npm 协议（workspace/file/link 等）且 confidence 为 low 的
+    if (entry.resolvedVersion === '0.0.0' && entry.confidence === 'low') {
+      // package.json fallback 时无法解析版本的条目
+      skipped.push({
+        name: entry.name,
+        reason: '版本号无法解析（package.json fallback）',
+      })
+      continue
+    }
+    toFetch.push({
+      name: entry.name,
+      packageName: entry.packageName,
+      version: entry.resolvedVersion,
+    })
+  }
+
+  let completed = 0
+  const total = toFetch.length
+
+  const fetched = await Promise.all(
+    toFetch.map(({ name, packageName, version }) =>
+      limit(async (): Promise<BundleInfo> => {
+        let result: BundleInfo
+        try {
+          result = await fetchSize(packageName, version)
+        } catch (err) {
+          // 单包失败不阻断整体；记录错误信息让用户能定位
+          result = {
+            name,
+            version,
+            size: 0,
+            gzip: 0,
+            dependencyCount: 0,
+            hasJSModule: false,
+            hasJSNext: false,
+            source: 'unknown',
+            error: err instanceof Error ? err.message : String(err),
+          }
+        }
+        // 标注 resolvedVersion
+        result.resolvedVersion = version
+        completed++
+        onProgress?.({ current: completed, total, name })
+        onResult?.({ current: completed, total, result })
+        return result
+      }),
+    ),
+  )
+
+  bundles.push(...fetched)
+
+  const sorted = [...bundles].sort((a, b) => b.gzip - a.gzip)
+
+  return {
+    bundles,
+    totalSize: bundles.reduce((s, b) => s + b.size, 0),
+    totalGzip: bundles.reduce((s, b) => s + b.gzip, 0),
+    topN: sorted.slice(0, Math.max(0, topN)),
+    skipped,
+  }
+}
+
+// =====================================================================
+// 旧版兼容入口（接受 PackageJson，内部走 resolveSpec）
+// =====================================================================
+
+/**
+ * 旧版入口：接受 PackageJson，内部解析版本
+ *
+ * @deprecated 新代码应使用 buildInventory() + analyzeBundleSize(entries, fetcher)
+ */
+export async function analyzeBundleSizeFromPackage(
   pkg: PackageJson,
   fetchSize: BundleFetcher,
   options: AnalyzeBundleOptions = {},
@@ -87,10 +216,10 @@ export async function analyzeBundleSize(
   } = options
 
   const limit = pLimit(Math.max(1, concurrency))
-  const ignoreMatchers = ignore.map(compileIgnorePattern)
+  const isIgnored = buildIgnoreMatcher(ignore)
 
   // 合并要分析的依赖列表
-  const entries: Array<[string, string]> = [
+  const deps: Array<[string, string]> = [
     ...Object.entries(pkg.dependencies ?? {}),
     ...(includeDev ? Object.entries(pkg.devDependencies ?? {}) : []),
   ]
@@ -100,8 +229,8 @@ export async function analyzeBundleSize(
 
   // 先扫一遍做协议/ignore 过滤，再发起并发请求
   const toFetch: Array<{ name: string; version?: string }> = []
-  for (const [name, raw] of entries) {
-    if (ignoreMatchers.some(m => m(name))) {
+  for (const [name, raw] of deps) {
+    if (isIgnored(name)) {
       skipped.push({ name, reason: '被 ignore 配置匹配' })
       continue
     }
@@ -123,7 +252,6 @@ export async function analyzeBundleSize(
         try {
           result = await fetchSize(name, version)
         } catch (err) {
-          // 单包失败不阻断整体；记录错误信息让用户能定位
           result = {
             name,
             version: version ?? '',
@@ -158,7 +286,7 @@ export async function analyzeBundleSize(
 }
 
 // =====================================================================
-// 辅助函数
+// 辅助函数（保留供旧版入口和外部使用）
 // =====================================================================
 
 /**
@@ -209,25 +337,4 @@ export function resolveSpec(raw: string): { version?: string; skip?: string } {
   // >=1 <2 → 1
   const cleaned = raw.replace(/^[\^~>=<]+/, '').split(' ')[0] ?? ''
   return cleaned ? { version: cleaned } : { version: undefined }
-}
-
-/**
- * 编译一条 ignore 模式为匹配函数
- *
- * 支持：
- * - 精确：`'lodash'`           → `name === 'lodash'`
- * - 通配：`'@internal/*'`      → `name.startsWith('@internal/')`
- */
-export function compileIgnorePattern(
-  pattern: string,
-): (name: string) => boolean {
-  if (pattern.endsWith('/*')) {
-    const prefix = pattern.slice(0, -1) // 保留末尾的 '/'
-    return name => name.startsWith(prefix)
-  }
-  if (pattern.endsWith('*')) {
-    const prefix = pattern.slice(0, -1)
-    return name => name.startsWith(prefix)
-  }
-  return name => name === pattern
 }

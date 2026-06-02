@@ -226,10 +226,10 @@ function renderLicenseSection(licenses: LicenseInfo[]): string {
   }
 
   const table = new Table({
-    head: ['包名', '许可证', '类型', '风险', '冲突说明'].map(s =>
-      chalk.cyan(s),
+    head: ['包名', '版本', '许可证', '类型', '风险', '来源', '冲突说明'].map(
+      s => chalk.cyan(s),
     ),
-    colWidths: [26, 20, 18, 8, 30],
+    colWidths: [20, 10, 16, 14, 8, 18, 24],
     style: { head: [], border: [] },
     wordWrap: true,
   })
@@ -241,11 +241,14 @@ function renderLicenseSection(licenses: LicenseInfo[]): string {
         : l.risk === 'medium'
           ? chalk.yellow
           : chalk.gray
+    const humanReview = l.needsHumanReview ? chalk.yellow(' [需人工审核]') : ''
     table.push([
-      l.name,
+      l.name + humanReview,
+      l.version ?? chalk.gray('—'),
       l.license,
       l.licenseType,
       riskColor(l.risk),
+      l.source ?? chalk.gray('—'),
       l.conflict ?? chalk.gray('—'),
     ])
   }
@@ -285,8 +288,12 @@ function renderSecuritySection(security: SecurityInfo[]): string {
           : s.highestSeverity === 'moderate'
             ? chalk.yellow
             : chalk.gray
+    const scopeLabel = s.scope ? chalk.gray(` [${s.scope}]`) : ''
+    const directLabel = s.isDirect
+      ? chalk.cyan(' [direct]')
+      : chalk.gray(' [transitive]')
     lines.push(
-      `  ${sevColor('●')} ${chalk.bold(s.name)} ${chalk.gray(`(${s.totalVulnerabilities} 个漏洞，最高 ${s.highestSeverity})`)}`,
+      `  ${sevColor('●')} ${chalk.bold(s.name)}${directLabel}${scopeLabel} ${chalk.gray(`(${s.totalVulnerabilities} 个漏洞，最高 ${s.highestSeverity})`)}`,
     )
     for (const v of s.vulnerabilities.slice(0, 3)) {
       lines.push(
@@ -333,7 +340,9 @@ function renderOptimizationSection(
         : o.priority === 'medium'
           ? chalk.yellow('●')
           : chalk.gray('●')
-    const head = `  ${priIcon} ${chalk.bold(o.packageName)} ${chalk.gray(`[${o.type}]`)}`
+    const confBadge = o.confidence ? chalk.gray(`[${o.confidence}]`) : ''
+    const actBadge = o.actionability ? chalk.gray(`[${o.actionability}]`) : ''
+    const head = `  ${priIcon} ${chalk.bold(o.packageName)} ${chalk.gray(`[${o.type}]`)} ${confBadge} ${actBadge}`
     const savings =
       o.estimatedSavings && o.estimatedSavings > 0
         ? chalk.green(
@@ -350,10 +359,40 @@ function renderOptimizationSection(
         `    ${chalk.gray('建议替代：')}${chalk.cyan(o.alternative)} ${chalk.gray(`(难度: ${o.difficulty}${o.breakingChange ? ', 破坏性变更' : ''})`)}`,
       )
     }
+    // 证据
+    if (o.evidence && o.evidence.length > 0) {
+      for (const ev of o.evidence) {
+        const loc = ev.file
+          ? ` (${ev.file}${ev.line ? `:${ev.line}` : ''})`
+          : ''
+        lines.push(
+          `    ${chalk.gray('📎')} ${chalk.gray(ev.source)}${chalk.gray(loc)}: ${chalk.gray(ev.detail)}`,
+        )
+      }
+    }
+    // 前提条件
+    if (o.preconditions && o.preconditions.length > 0) {
+      for (const p of o.preconditions) {
+        lines.push(`    ${chalk.yellow('⚠ 前提：')}${chalk.gray(p)}`)
+      }
+    }
+    // 假设
+    if (o.assumptions && o.assumptions.length > 0) {
+      for (const a of o.assumptions) {
+        lines.push(`    ${chalk.gray('ℹ 假设：')}${chalk.gray(a)}`)
+      }
+    }
     if (o.caveats && o.caveats.length > 0) {
       for (const c of o.caveats) {
         lines.push(`    ${chalk.yellow('⚠')} ${chalk.gray(c)}`)
       }
+    }
+    // 建议步骤
+    if (o.suggestedSteps && o.suggestedSteps.length > 0) {
+      lines.push(`    ${chalk.gray('操作步骤：')}`)
+      o.suggestedSteps.forEach((step, i) => {
+        lines.push(`      ${chalk.gray(`${i + 1}.`)} ${step}`)
+      })
     }
     if (o.migrationGuide) {
       lines.push(

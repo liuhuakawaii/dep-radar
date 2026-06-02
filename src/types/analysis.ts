@@ -5,6 +5,11 @@
  * 都基于这里的类型产出结果，最终聚合为 AnalysisReport。
  */
 
+import type { UsageClass } from './classifier.js'
+import type { BuildArtifactResult } from '../analyzers/buildArtifacts.js'
+import type { DuplicateVersionInfo } from '../analyzers/duplicateVersions.js'
+import type { HygieneIssue } from '../analyzers/dependencyHygiene.js'
+import type { DependencyInventory } from './inventory.js'
 import type { PackageManager } from './package.js'
 
 // =====================================================================
@@ -14,6 +19,8 @@ import type { PackageManager } from './package.js'
 export interface BundleInfo {
   name: string
   version: string
+  /** lockfile / node_modules 中的实际版本（与 version 可能不同） */
+  resolvedVersion?: string
   /** minified 字节数 */
   size: number
   /** gzip 后字节数 */
@@ -84,6 +91,8 @@ export type LicenseCategory =
 
 export interface LicenseInfo {
   name: string
+  /** 实际解析版本（来自 lockfile / node_modules） */
+  version?: string
   /** 原始许可证字符串（如 "MIT"、"(MIT OR Apache-2.0)") */
   license: string
   licenseType: LicenseCategory
@@ -91,6 +100,16 @@ export interface LicenseInfo {
   risk: 'low' | 'medium' | 'high'
   /** 命中冲突规则时给出的描述（如"GPL 可能要求开源"） */
   conflict?: string
+  /** 许可证数据来源 */
+  source?: string
+  /** 原始 license 字段（未 normalize） */
+  rawLicense?: string
+  /** 归一化后的 license 字段（如从 licenses: [{type}] 提取） */
+  normalizedLicense?: string
+  /** 是否需要人工审核（UNLICENSED/proprietary/Commercial/SEE LICENSE IN） */
+  needsHumanReview?: boolean
+  /** 人工审核原因 */
+  humanReviewReason?: string
 }
 
 // =====================================================================
@@ -103,6 +122,20 @@ export interface Vulnerability {
   url: string
   /** 是否存在已发布的修复版本 */
   fixAvailable: boolean
+  /** npm audit vulnerability ID */
+  id?: string
+  /** 漏洞来源（如 GitHub Advisory URL） */
+  source?: string
+  /** 受影响版本范围 */
+  range?: string
+  /** 漏洞传递路径（直接漏洞名或 CVE） */
+  via?: string[]
+  /** 受影响的包列表 */
+  effects?: string[]
+  /** 修复版本号 */
+  fixVersion?: string
+  /** 修复命令（如 npm audit fix） */
+  fixCommand?: string
 }
 
 export interface SecurityInfo {
@@ -111,6 +144,12 @@ export interface SecurityInfo {
   totalVulnerabilities: number
   /** 该包所有漏洞中的最高严重度 */
   highestSeverity: 'low' | 'moderate' | 'high' | 'critical' | 'none'
+  /** 漏洞范围：prod（生产依赖）/ dev（开发依赖）/ mixed / unknown */
+  scope?: 'prod' | 'dev' | 'mixed' | 'unknown'
+  /** 是否为直接依赖 */
+  isDirect?: boolean
+  /** 从 root 到漏洞包的依赖路径 */
+  dependencyPaths?: string[]
 }
 
 // =====================================================================
@@ -159,6 +198,25 @@ export interface OptimizationSuggestion {
   caveats?: string[]
   /** 迁移指南链接 */
   migrationGuide?: string
+  /** 建议置信度 */
+  confidence?: 'high' | 'medium' | 'low'
+  /** 可操作性 */
+  actionability?: 'ready' | 'needs-review' | 'info'
+  /** 证据列表 */
+  evidence?: Array<{
+    source: string
+    file?: string
+    line?: number
+    detail: string
+  }>
+  /** 前提假设 */
+  assumptions?: string[]
+  /** 前置条件 */
+  preconditions?: string[]
+  /** 阻塞因素 */
+  blockedBy?: string[]
+  /** 建议操作步骤 */
+  suggestedSteps?: string[]
 }
 
 // =====================================================================
@@ -170,6 +228,8 @@ export interface AnalysisReport {
   /** 分析时间（ISO 字符串） */
   timestamp: string
   packageManager: PackageManager
+  /** 依赖清单（来自 lockfile / node_modules / package.json） */
+  inventory?: DependencyInventory
   /**
    * 本次分析实际运行的维度。
    *
@@ -201,10 +261,18 @@ export interface AnalysisReport {
     optimizationCount: number
     /** 被标记为 deprecated 的包数 */
     deprecatedCount: number
+    /** 依赖分类统计 */
+    classified?: Record<UsageClass, number>
   }
   bundles: BundleInfo[]
   health: HealthInfo[]
   licenses: LicenseInfo[]
   security: SecurityInfo[]
   optimizations: OptimizationSuggestion[]
+  /** 依赖卫生问题 */
+  hygieneIssues?: HygieneIssue[]
+  /** 多版本并存问题 */
+  duplicateVersions?: DuplicateVersionInfo[]
+  /** 构建产物分析结果 */
+  buildArtifacts?: BuildArtifactResult
 }

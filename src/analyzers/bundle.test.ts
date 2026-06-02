@@ -2,9 +2,9 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { BundleInfo } from '../types/analysis.js'
 import type { PackageJson } from '../types/package.js'
+import { compileIgnorePattern } from '../utils/ignore.js'
 import {
-  analyzeBundleSize,
-  compileIgnorePattern,
+  analyzeBundleSizeFromPackage,
   resolveSpec,
   type BundleFetcher,
 } from './bundle.js'
@@ -51,7 +51,7 @@ describe('resolveSpec', () => {
     expect(resolveSpec('x')).toEqual({ version: undefined })
   })
 
-  it('workspace/file/link/git/http 等协议应被 skip', () => {
+  it('workspace:/file:/link:/git:/http: 等协议应被 skip', () => {
     expect(resolveSpec('workspace:*').skip).toBe('workspace 协议')
     expect(resolveSpec('file:../local').skip).toBe('file 协议')
     expect(resolveSpec('link:../sibling').skip).toBe('link 协议')
@@ -98,10 +98,10 @@ describe('compileIgnorePattern', () => {
 })
 
 // =====================================================================
-// analyzeBundleSize
+// analyzeBundleSizeFromPackage (旧版 API)
 // =====================================================================
 
-describe('analyzeBundleSize', () => {
+describe('analyzeBundleSizeFromPackage', () => {
   it('happy path：应正确累加 totalSize / totalGzip 并产出 topN', async () => {
     const fetcher: BundleFetcher = async (name, version) => {
       const sizeByName: Record<string, number> = {
@@ -112,7 +112,7 @@ describe('analyzeBundleSize', () => {
       return makeBundle(name, version ?? 'latest', sizeByName[name] ?? 0)
     }
 
-    const result = await analyzeBundleSize(
+    const result = await analyzeBundleSizeFromPackage(
       minimalPkg({
         dependencies: {
           react: '^18.0.0',
@@ -139,7 +139,7 @@ describe('analyzeBundleSize', () => {
       return makeBundle(name, '1.0.0', 1_000)
     }
 
-    const result = await analyzeBundleSize(
+    const result = await analyzeBundleSizeFromPackage(
       minimalPkg({
         dependencies: { ok: '^1.0.0', broken: '^2.0.0' },
       }),
@@ -158,7 +158,7 @@ describe('analyzeBundleSize', () => {
 
   it('空 dependencies 应返回空结果，不抛错', async () => {
     const fetcher = vi.fn() as unknown as BundleFetcher
-    const result = await analyzeBundleSize(minimalPkg(), fetcher)
+    const result = await analyzeBundleSizeFromPackage(minimalPkg(), fetcher)
     expect(result.bundles).toEqual([])
     expect(result.totalGzip).toBe(0)
     expect(result.topN).toEqual([])
@@ -173,10 +173,12 @@ describe('analyzeBundleSize', () => {
       devDependencies: { vitest: '^2.0.0' },
     })
 
-    const without = await analyzeBundleSize(pkg, fetcher)
+    const without = await analyzeBundleSizeFromPackage(pkg, fetcher)
     expect(without.bundles).toHaveLength(1)
 
-    const withDev = await analyzeBundleSize(pkg, fetcher, { includeDev: true })
+    const withDev = await analyzeBundleSizeFromPackage(pkg, fetcher, {
+      includeDev: true,
+    })
     expect(withDev.bundles).toHaveLength(2)
     expect(withDev.bundles.map(b => b.name).sort()).toEqual(['react', 'vitest'])
   })
@@ -186,7 +188,7 @@ describe('analyzeBundleSize', () => {
       makeBundle(name, version ?? '1.0.0', 1_000),
     ) as unknown as BundleFetcher
 
-    const result = await analyzeBundleSize(
+    const result = await analyzeBundleSizeFromPackage(
       minimalPkg({
         dependencies: {
           react: '^18.0.0',
@@ -212,7 +214,7 @@ describe('analyzeBundleSize', () => {
       makeBundle(name, version ?? '1.0.0', 1_000),
     ) as unknown as BundleFetcher
 
-    const result = await analyzeBundleSize(
+    const result = await analyzeBundleSizeFromPackage(
       minimalPkg({
         dependencies: {
           react: '^18.0.0',
@@ -238,7 +240,7 @@ describe('analyzeBundleSize', () => {
   it('topN=0 应返回空 topN（不抛错）', async () => {
     const fetcher: BundleFetcher = async name =>
       makeBundle(name, '1.0.0', 1_000)
-    const result = await analyzeBundleSize(
+    const result = await analyzeBundleSizeFromPackage(
       minimalPkg({ dependencies: { a: '^1', b: '^1' } }),
       fetcher,
       { topN: 0 },
@@ -262,9 +264,13 @@ describe('analyzeBundleSize', () => {
     const deps = Object.fromEntries(
       Array.from({ length: 20 }, (_, i) => [`pkg-${i}`, '^1.0.0']),
     )
-    await analyzeBundleSize(minimalPkg({ dependencies: deps }), fetcher, {
-      concurrency: 3,
-    })
+    await analyzeBundleSizeFromPackage(
+      minimalPkg({ dependencies: deps }),
+      fetcher,
+      {
+        concurrency: 3,
+      },
+    )
     expect(maxConcurrent).toBeLessThanOrEqual(3)
     expect(maxConcurrent).toBeGreaterThan(0)
   })
@@ -275,7 +281,7 @@ describe('analyzeBundleSize', () => {
       calls.push([name, version])
       return makeBundle(name, version ?? 'x', 1)
     }
-    await analyzeBundleSize(
+    await analyzeBundleSizeFromPackage(
       minimalPkg({ dependencies: { foo: '*', bar: '^1.0.0' } }),
       fetcher,
     )
