@@ -8,15 +8,13 @@
 
 ### 1.1 CLI 入口 (`src/cli.ts`)
 
-基于 **Commander.js** 构建的 CLI 程序，支持 5 个子命令：
+基于 **Commander.js** 构建的 CLI 程序，支持 3 个核心命令：
 
-| 命令       | 状态      | 说明                                                |
-| ---------- | --------- | --------------------------------------------------- |
-| `analyze`  | ✅ 已完成 | 单维度详查分析                                      |
-| `tree`     | ✅ 已完成 | 依赖树可视化                                        |
-| `optimize` | ✅ 已完成 | 跨维度聚合分析 + 优化建议                           |
-| `compare`  | ✅ 已完成 | 对比两个项目的依赖差异（多维度 + --since 增量对比） |
-| `report`   | ✅ 已完成 | HTML 报告快捷生成（optimize --format html 的别名）  |
+| 命令      | 状态      | 说明                                                       |
+| --------- | --------- | ---------------------------------------------------------- |
+| `scan`    | ✅ 已完成 | 日常依赖审查与优化建议（替代 analyze + optimize + report） |
+| `explain` | ✅ 已完成 | 解释单个依赖为什么存在                                     |
+| `doctor`  | ✅ 已完成 | 检查项目依赖健康基线（纯本地，无网络请求）                 |
 
 **全局选项：**
 
@@ -300,97 +298,75 @@ export default defineConfig({
 
 ## 五、命令层编排
 
-### 5.1 `analyze` 命令 (`src/commands/analyze.ts`)
+### 5.1 `scan` 命令 (`src/commands/scan.ts`)
 
-**功能：** 单维度详查分析。
+**功能：** 日常依赖审查与优化建议，替代原 `analyze` + `optimize` + `report`。
 
 **流程：**
 
 1. 加载配置（cosmiconfig）→ 读 package.json → 检测包管理器
-2. 按 `--only` 参数分支：
-   - `size`（默认）：体积分析 + budget 校验
-   - `health`：依赖健康度分析
-   - `license`：许可证合规分析
-   - `security`：安全漏洞审计（调用 `npm/pnpm/yarn audit`）
-3. 渲染报告（terminal/json/html）
-4. 决定退出码
+2. 构建 DependencyInventory（从 lockfile / node_modules）
+3. 源码可达性分析 + 依赖分类
+4. **并行**跑四个 analyzer（bundle + health + license + security）
+5. 依赖卫生检测 + 多版本检测 + 优化建议生成
+6. 默认模式过滤：只保留 actionable findings
+7. 渲染报告 + 决定退出码
+
+**模式：**
+
+- **默认模式**：快速扫描，只输出可操作建议，隐藏低价值 transitive findings
+- **`--deep` 模式**：完整 lock 文件扫描，等同原 optimize 行为
+- **`--ci` 模式**：只对 direct prod critical/high 漏洞和高风险许可证冲突返回非零
 
 **退出码规则：**
 
 - 0: OK
 - 1: 通用错误
-- 2: 发现 high/critical 漏洞（security 维度）
-- 3: 体积超出 budget（size 维度）
-- 4: 高风险许可证冲突（license 维度）
+- 2: 发现 direct prod critical/high 漏洞（`--ci` 模式）
+- 3: 体积超出 budget
+- 4: 高风险许可证冲突
 
-### 5.2 `optimize` 命令 (`src/commands/optimize.ts`)
+**共享模块：** `src/commands/shared.ts` 提供 `loadSetup()`、`createCacheFromGlobals()`、`renderReport()`、`makeEmptyReport()`。
 
-**功能：** 跨维度聚合分析 + 生成可操作建议。
+### 5.2 `explain` 命令 (`src/commands/explain.ts`)
 
-**流程：**
+**功能：** 解释单个依赖为什么存在于项目中。
 
-1. 加载配置 + 读 package.json
-2. **并行**跑四个 analyzer（bundle + health + license + security），避免串行等待
-3. 结果喂给 `generateOptimizations` 生成优化建议
-4. 组装 `AnalysisReport`（含 `dimensions` 标记哪些维度实际运行）
-5. 渲染输出
+**输出内容：**
 
-**特殊选项：**
+- 是否为直接依赖，位于 `dependencies` / `devDependencies` / `transitive`
+- 是否被源码 import/require（含文件位置和引用次数）
+- 如果是 transitive：最短依赖路径
+- 依赖使用分类（runtime / build / test / script / config）
+- 是否可移除/移动/升级
+- 操作命令建议（如 `pnpm remove X`）
 
-- `--skip-health`：跳过健康度维度（避免 GitHub API 调用，速度更快）
-- `--skip-license`：跳过许可证维度
-- `--skip-security`：跳过安全审计维度
+**流程：** 跑完整 inventory + reachability + classification pipeline → 筛选目标包 → 输出单包报告。
 
-### 5.3 `tree` 命令 (`src/commands/tree.ts`)
+### 5.3 `doctor` 命令 (`src/commands/doctor.ts`)
 
-**功能：** 依赖树可视化。
+**功能：** 检查项目依赖健康基线。纯本地检查，不发网络请求。
 
-**核心特性：**
+**检查项（`src/analyzers/doctorChecks.ts`）：**
 
-- 调用包管理器的 `list --json` 命令获取完整依赖树
-- **npm 解析**：`npm ls --all --json` 输出嵌套 dependencies map
-- **pnpm 解析**：`pnpm list --depth=Infinity --json` 输出数组（monorepo 取第一项）
-- **yarn 支持**：自动检测 Classic/Berry 版本，Classic 使用 `yarn list --json`（NDJSON），Berry 使用 `yarn info --json --recursive`
-- **ASCII 树渲染**：`├──` / `└──` / `│` 绘制树状结构
-- **深度控制**：`--depth <n>` 限制最大渲染深度，超出用 `...` 省略
-- **优化提示**：匹配 REPLACEMENTS 表的包显示 `[!] 建议替换为 xxx (节省 xx%)`
-- **容错**：`npm ls` 因 peerDep 冲突返回非零时仍从 stdout 解析
+- Lock 文件一致性：检测到的包管理器是否与 lock 文件匹配
+- 多 lock 文件：是否存在多个 lock 文件
+- node_modules 状态：是否已安装，元数据是否一致
+- packageManager 字段：corepack 声明是否与检测结果一致
 
-### 5.4 `compare` 命令 (`src/commands/compare.ts`)
+**项目类型检测（`src/analyzers/projectDetector.ts`）：**
 
-**功能：** 对比两个项目的依赖差异，支持多维度和增量对比。
+- 自动识别：Expo / React Native / Next.js / Vite / Node.js / unknown
+- 提取框架版本和 React 版本
 
-**支持维度（`--dimensions`，逗号分隔，默认 `size`）：**
-
-- **size**：体积对比 — 新增/移除/变更包的 gzip 差异
-- **health**：健康度对比 — 共同依赖的 healthScore 分数差异
-- **license**：许可证对比 — 风险等级变化（如 low → high）
-
-**增量对比（`--since <ref>`）：**
-
-- 与指定 git ref 的 package.json 对比（忽略第二个路径参数）
-- 适合 CI 场景：`dep-radar compare . --since main` 查看当前分支的依赖变化
-
-**核心特性：**
-
-- 每个维度独立渲染为一个 section
-- 体积 diff：新增（绿+）、移除（红-）、变更（黄~），按 gzip 降序
-- 健康度 diff：分数差异排序，deprecated 包标记
-- 许可证 diff：风险变化的排前面，无变化则显示"一致"
-- 仅在一方出现的包单独列出
-
-### 5.5 `report` 命令
-
-等价于 `optimize --format <fmt>`，额外支持 `--output` 指定输出路径（默认按格式生成文件名）。支持 `--format html|json|markdown`。
-
-### 5.6 Monorepo Workspace 支持
+### 5.4 Monorepo Workspace 支持
 
 **支持的配置格式：**
 
 - npm/yarn `workspaces` 字段（数组或 `{ packages: [...] }` 对象）
 - pnpm `pnpm-workspace.yaml`
 
-**CLI 选项（analyze / optimize / report / tree）：**
+**CLI 选项（scan）：**
 
 - `--workspace <name>`：分析指定子包（按 name 或 path 匹配）
 - `--all-workspaces`：逐个分析所有子包，退出码取最严重的
@@ -407,10 +383,7 @@ export default defineConfig({
 
 ```bash
 # 只分析相对于 main 分支变更的依赖
-dep-radar analyze --since main
-
-# 对比当前分支与 main 的依赖差异
-dep-radar compare . --since main
+dep-radar scan --since main
 ```
 
 ---

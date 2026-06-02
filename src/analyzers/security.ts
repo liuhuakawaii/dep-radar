@@ -177,6 +177,7 @@ export function parseAuditOutput(
   const data = JSON.parse(stdout) as unknown
   switch (pm) {
     case 'npm':
+    case 'bun':
       return parseNpmAudit(data)
     case 'pnpm':
       return parsePnpmAudit(data)

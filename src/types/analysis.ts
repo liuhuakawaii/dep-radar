@@ -276,3 +276,49 @@ export interface AnalysisReport {
   /** 构建产物分析结果 */
   buildArtifacts?: BuildArtifactResult
 }
+
+// =====================================================================
+// explain 命令结果
+// =====================================================================
+
+/**
+ * `dep-radar explain <package>` 的输出类型
+ *
+ * 解释单个依赖为什么存在于项目中，以及是否可以删除/移动/升级。
+ */
+export interface ExplainResult {
+  /** 包名 */
+  packageName: string
+  /** 实际安装版本 */
+  version: string
+  /** 是否为直接依赖 */
+  isDirect: boolean
+  /** 声明位置 */
+  declaredIn:
+    | 'dependencies'
+    | 'devDependencies'
+    | 'peerDependencies'
+    | 'optionalDependencies'
+    | 'transitive'
+  /** 是否被源码 import/require */
+  isImported: boolean
+  /** 源码引用位置（最多 5 个） */
+  importLocations?: Array<{
+    file: string
+    line: number
+    specifier: string
+    importKind: string
+  }>
+  /** 来源 bucket */
+  sourceBucket?: 'src' | 'test' | 'config' | 'script'
+  /** 依赖使用分类 */
+  usageClass?: string
+  /** transitive 时的最短依赖路径 */
+  dependencyPath?: string[]
+  /** 是否可以移除 */
+  canRemove: boolean | 'maybe'
+  /** 建议操作 */
+  suggestedAction: string
+  /** 建议操作命令（如 "pnpm remove X"） */
+  suggestedCommand?: string
+}

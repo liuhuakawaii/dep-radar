@@ -40,9 +40,16 @@ export interface DataCacheOptions {
  *   await cache.set('pkg-size/lodash@4.17.21', data)
  * }
  */
+export interface CacheStats {
+  hits: number
+  misses: number
+  writes: number
+}
+
 export class DataCache {
   private readonly dir: string
   private readonly ttl: number
+  private _stats: CacheStats = { hits: 0, misses: 0, writes: 0 }
 
   constructor(options: DataCacheOptions = {}) {
     this.dir = options.cacheDir ?? envPaths('dep-radar').cache
@@ -57,6 +64,13 @@ export class DataCache {
   }
 
   /**
+   * 缓存命中/未命中统计
+   */
+  get stats(): Readonly<CacheStats> {
+    return this._stats
+  }
+
+  /**
    * 读取缓存
    *
    * @returns 命中且未过期则返回数据，否则返回 null（不抛错）
@@ -65,11 +79,15 @@ export class DataCache {
     const file = this.keyToPath(key)
     try {
       const st = await stat(file)
-      if (Date.now() - st.mtimeMs > this.ttl) return null
+      if (Date.now() - st.mtimeMs > this.ttl) {
+        this._stats.misses++
+        return null
+      }
       const content = await readFile(file, 'utf-8')
+      this._stats.hits++
       return JSON.parse(content) as T
     } catch {
-      // 任何错误（文件不存在、JSON 损坏、权限错误）都视为 cache miss
+      this._stats.misses++
       return null
     }
   }
@@ -84,6 +102,7 @@ export class DataCache {
     try {
       await mkdir(dirname(file), { recursive: true })
       await writeFile(file, JSON.stringify(value), 'utf-8')
+      this._stats.writes++
     } catch {
       // 静默：缓存写入失败不应影响主流程
     }
@@ -94,11 +113,6 @@ export class DataCache {
    *
    * 先查缓存，命中则直接返回；未命中则执行 fetchFn，成功后写入缓存。
    * fetchFn 抛错时不写缓存，直接向上抛出。
-   *
-   * @example
-   * const data = await cache.withCache('pkg-size/lodash@4.17.21', () =>
-   *   fetchJson('https://pkg-size.dev/api/lodash@4.17.21')
-   * )
    */
   async withCache<T>(key: string, fetchFn: () => Promise<T>): Promise<T> {
     const cached = await this.get<T>(key)

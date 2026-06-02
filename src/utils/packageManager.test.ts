@@ -41,11 +41,21 @@ describe('detectPackageManager', () => {
   it('无 lock 文件时回退到 npm', () => {
     expect(detectPackageManager(dir)).toBe('npm')
   })
+
+  it('存在 bun.lock 时识别为 bun', () => {
+    writeFileSync(join(dir, 'bun.lock'), '')
+    expect(detectPackageManager(dir)).toBe('bun')
+  })
+
+  it('存在 bun.lockb 时识别为 bun', () => {
+    writeFileSync(join(dir, 'bun.lockb'), '')
+    expect(detectPackageManager(dir)).toBe('bun')
+  })
 })
 
 describe('PM_COMMANDS', () => {
-  it('为三种 PM 都提供 list 与 audit 命令', () => {
-    for (const pm of ['npm', 'pnpm', 'yarn'] as const) {
+  it('为四种 PM 都提供 list 与 audit 命令', () => {
+    for (const pm of ['npm', 'pnpm', 'yarn', 'bun'] as const) {
       expect(PM_COMMANDS[pm].list.cmd).toBeTruthy()
       expect(Array.isArray(PM_COMMANDS[pm].list.args)).toBe(true)
       expect(PM_COMMANDS[pm].audit.cmd).toBeTruthy()

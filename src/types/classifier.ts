@@ -21,6 +21,7 @@ export type UsageClass =
   | 'test'
   | 'script'
   | 'config'
+  | 'framework-required'
   | 'unknown'
 
 /**

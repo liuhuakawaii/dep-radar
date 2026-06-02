@@ -14,6 +14,10 @@ import boxen from 'boxen'
 import chalk from 'chalk'
 import Table from 'cli-table3'
 
+import {
+  generateCommands,
+  generateExplainHint,
+} from '../analyzers/suggestionCommands.js'
 import type {
   AnalysisReport,
   BundleInfo,
@@ -22,6 +26,7 @@ import type {
   OptimizationSuggestion,
   SecurityInfo,
 } from '../types/analysis.js'
+import type { PackageManager } from '../types/package.js'
 import {
   formatBytes,
   formatDate,
@@ -29,21 +34,47 @@ import {
   formatRelativeTime,
 } from '../utils/format.js'
 
+export interface TerminalReportOptions {
+  /** 显示完整输出（不过滤） */
+  verbose?: boolean
+  /** 每个 section 默认最多显示的条目数；默认 10 */
+  maxItems?: number
+}
+
 /**
  * 渲染完整报告
  *
  * 返回值是一个完整字符串，调用方决定是 print 还是写文件。
  */
-export function renderTerminalReport(report: AnalysisReport): string {
+export function renderTerminalReport(
+  report: AnalysisReport,
+  options: TerminalReportOptions = {},
+): string {
+  const { verbose = false, maxItems = 10 } = options
+
   const sections = [
     renderHeader(report),
     renderSummary(report),
-    report.dimensions.size ? renderBundleSection(report.bundles) : '',
-    report.dimensions.health ? renderHealthSection(report.health) : '',
-    report.dimensions.license ? renderLicenseSection(report.licenses) : '',
-    report.dimensions.security ? renderSecuritySection(report.security) : '',
+    report.dimensions.optimize ? renderRecommendedActions(report) : '',
+    report.dimensions.size
+      ? renderBundleSection(report.bundles, verbose, maxItems)
+      : '',
+    report.dimensions.health
+      ? renderHealthSection(report.health, verbose, maxItems)
+      : '',
+    report.dimensions.license
+      ? renderLicenseSection(report.licenses, verbose, maxItems)
+      : '',
+    report.dimensions.security
+      ? renderSecuritySection(report.security, verbose, maxItems)
+      : '',
     report.dimensions.optimize
-      ? renderOptimizationSection(report.optimizations)
+      ? renderOptimizationSection(
+          report.optimizations,
+          verbose,
+          maxItems,
+          report.packageManager,
+        )
       : '',
   ]
   return sections.filter(Boolean).join('\n\n') + '\n'
@@ -123,15 +154,75 @@ function renderSummary(report: AnalysisReport): string {
 }
 
 // =====================================================================
+// Recommended actions
+// =====================================================================
+
+function renderRecommendedActions(report: AnalysisReport): string {
+  const pm = report.packageManager
+  const actions: string[] = []
+
+  // 从优化建议中提取 top 3 高优先级项
+  const topOpts = [...report.optimizations]
+    .sort((a, b) => {
+      const pri = { high: 3, medium: 2, low: 1 }
+      return (pri[b.priority] ?? 0) - (pri[a.priority] ?? 0)
+    })
+    .slice(0, 3)
+
+  for (const o of topOpts) {
+    const cmd = generateCommands(o, pm)
+    if (cmd) {
+      actions.push(
+        `  ${chalk.cyan('▶')} ${cmd.description}: ${chalk.cyan(cmd.command)}`,
+      )
+    }
+  }
+
+  // 从安全漏洞中提取可修复项
+  const fixable = report.security
+    .filter(
+      s =>
+        s.totalVulnerabilities > 0 &&
+        s.vulnerabilities.some(v => v.fixAvailable),
+    )
+    .slice(0, 2)
+  for (const s of fixable) {
+    const fixCmd =
+      pm === 'pnpm'
+        ? 'pnpm audit fix'
+        : pm === 'yarn'
+          ? 'yarn npm audit fix'
+          : 'npm audit fix'
+    actions.push(
+      `  ${chalk.cyan('▶')} 修复 ${s.name} 漏洞: ${chalk.cyan(fixCmd)}`,
+    )
+  }
+
+  if (actions.length === 0) return ''
+
+  return [
+    chalk.bold.underline('推荐操作'),
+    ...actions,
+    chalk.gray('  使用 dep-radar explain <包名> 查看单个依赖详情'),
+  ].join('\n')
+}
+
+// =====================================================================
 // Bundle section
 // =====================================================================
 
-function renderBundleSection(bundles: BundleInfo[]): string {
+function renderBundleSection(
+  bundles: BundleInfo[],
+  verbose: boolean,
+  maxItems: number,
+): string {
   if (bundles.length === 0) {
     return chalk.bold.underline('包体积') + '\n' + chalk.gray('  （无数据）')
   }
 
   const sorted = [...bundles].sort((a, b) => b.gzip - a.gzip)
+  const shown = verbose ? sorted : sorted.slice(0, maxItems)
+  const hidden = sorted.length - shown.length
   const totalGzip = sorted.reduce((s, b) => s + b.gzip, 0)
 
   const table = new Table({
@@ -141,7 +232,7 @@ function renderBundleSection(bundles: BundleInfo[]): string {
     wordWrap: true,
   })
 
-  for (const b of sorted) {
+  for (const b of shown) {
     const percent =
       totalGzip > 0 ? ((b.gzip / totalGzip) * 100).toFixed(1) + '%' : '—'
     const name = b.error ? chalk.red(b.name) : b.name
@@ -150,7 +241,11 @@ function renderBundleSection(bundles: BundleInfo[]): string {
     table.push([name, b.version || chalk.gray('—'), sizeCol, percent, source])
   }
 
-  return chalk.bold.underline('包体积') + '\n' + table.toString()
+  const hiddenMsg =
+    hidden > 0
+      ? chalk.gray(`\n  ... 还有 ${hidden} 个包未显示（--verbose 查看全部）`)
+      : ''
+  return chalk.bold.underline('包体积') + '\n' + table.toString() + hiddenMsg
 }
 
 function renderSource(source: BundleInfo['source']): string {
@@ -170,12 +265,20 @@ function renderSource(source: BundleInfo['source']): string {
 // Health section
 // =====================================================================
 
-function renderHealthSection(health: HealthInfo[]): string {
+function renderHealthSection(
+  health: HealthInfo[],
+  verbose: boolean,
+  maxItems: number,
+): string {
   if (health.length === 0) {
     return (
       chalk.bold.underline('依赖健康度') + '\n' + chalk.gray('  （无数据）')
     )
   }
+
+  const sorted = [...health].sort((a, b) => a.healthScore - b.healthScore)
+  const shown = verbose ? sorted : sorted.slice(0, maxItems)
+  const hidden = sorted.length - shown.length
 
   const table = new Table({
     head: ['包名', '健康度', '周下载', '最近发布', '废弃', '类型支持'].map(s =>
@@ -185,7 +288,7 @@ function renderHealthSection(health: HealthInfo[]): string {
     style: { head: [], border: [] },
   })
 
-  for (const h of health) {
+  for (const h of shown) {
     const scoreColor =
       h.healthScore >= 70
         ? chalk.green
@@ -202,14 +305,24 @@ function renderHealthSection(health: HealthInfo[]): string {
     ])
   }
 
-  return chalk.bold.underline('依赖健康度') + '\n' + table.toString()
+  const hiddenMsg =
+    hidden > 0
+      ? chalk.gray(`\n  ... 还有 ${hidden} 个包未显示（--verbose 查看全部）`)
+      : ''
+  return (
+    chalk.bold.underline('依赖健康度') + '\n' + table.toString() + hiddenMsg
+  )
 }
 
 // =====================================================================
 // License section
 // =====================================================================
 
-function renderLicenseSection(licenses: LicenseInfo[]): string {
+function renderLicenseSection(
+  licenses: LicenseInfo[],
+  verbose: boolean,
+  maxItems: number,
+): string {
   if (licenses.length === 0) {
     return (
       chalk.bold.underline('许可证合规') + '\n' + chalk.gray('  （无数据）')
@@ -225,6 +338,9 @@ function renderLicenseSection(licenses: LicenseInfo[]): string {
     )
   }
 
+  const shown = verbose ? risky : risky.slice(0, maxItems)
+  const hidden = risky.length - shown.length
+
   const table = new Table({
     head: ['包名', '版本', '许可证', '类型', '风险', '来源', '冲突说明'].map(
       s => chalk.cyan(s),
@@ -234,7 +350,7 @@ function renderLicenseSection(licenses: LicenseInfo[]): string {
     wordWrap: true,
   })
 
-  for (const l of risky) {
+  for (const l of shown) {
     const riskColor =
       l.risk === 'high'
         ? chalk.red
@@ -253,14 +369,26 @@ function renderLicenseSection(licenses: LicenseInfo[]): string {
     ])
   }
 
-  return chalk.bold.underline('许可证合规') + '\n' + table.toString()
+  const hiddenMsg =
+    hidden > 0
+      ? chalk.gray(
+          `\n  ... 还有 ${hidden} 个许可证问题未显示（--verbose 查看全部）`,
+        )
+      : ''
+  return (
+    chalk.bold.underline('许可证合规') + '\n' + table.toString() + hiddenMsg
+  )
 }
 
 // =====================================================================
 // Security section
 // =====================================================================
 
-function renderSecuritySection(security: SecurityInfo[]): string {
+function renderSecuritySection(
+  security: SecurityInfo[],
+  verbose: boolean,
+  maxItems: number,
+): string {
   if (security.length === 0) {
     return (
       chalk.bold.underline('安全审计') +
@@ -278,8 +406,11 @@ function renderSecuritySection(security: SecurityInfo[]): string {
     )
   }
 
+  const shown = verbose ? vuln : vuln.slice(0, maxItems)
+  const hidden = vuln.length - shown.length
+
   const lines: string[] = [chalk.bold.underline('安全审计')]
-  for (const s of vuln) {
+  for (const s of shown) {
     const sevColor =
       s.highestSeverity === 'critical'
         ? chalk.red.bold
@@ -306,6 +437,11 @@ function renderSecuritySection(security: SecurityInfo[]): string {
       )
     }
   }
+  if (hidden > 0) {
+    lines.push(
+      chalk.gray(`  ... 还有 ${hidden} 个漏洞未显示（--verbose 查看全部）`),
+    )
+  }
   return lines.join('\n')
 }
 
@@ -315,6 +451,9 @@ function renderSecuritySection(security: SecurityInfo[]): string {
 
 function renderOptimizationSection(
   optimizations: OptimizationSuggestion[],
+  verbose: boolean,
+  maxItems: number,
+  pm?: PackageManager,
 ): string {
   if (optimizations.length === 0) {
     return (
@@ -332,8 +471,11 @@ function renderOptimizationSection(
     return (b.estimatedSavings ?? 0) - (a.estimatedSavings ?? 0)
   })
 
+  const shown = verbose ? sorted : sorted.slice(0, maxItems)
+  const hidden = sorted.length - shown.length
+
   const lines: string[] = [chalk.bold.underline('优化建议')]
-  for (const o of sorted) {
+  for (const o of shown) {
     const priIcon =
       o.priority === 'high'
         ? chalk.red('●')
@@ -399,6 +541,24 @@ function renderOptimizationSection(
         `    ${chalk.gray('迁移指南：')}${chalk.underline.gray(o.migrationGuide)}`,
       )
     }
+    // PM 命令
+    if (pm) {
+      const cmd = generateCommands(o, pm)
+      if (cmd) {
+        lines.push(`    ${chalk.cyan('▶')} ${chalk.cyan(cmd.command)}`)
+      }
+    }
+    // 低置信度时提示 explain
+    if (o.confidence === 'low' || o.actionability === 'needs-review') {
+      lines.push(
+        `    ${chalk.gray('💡')} ${chalk.gray(generateExplainHint(o.packageName))}`,
+      )
+    }
+  }
+  if (hidden > 0) {
+    lines.push(
+      chalk.gray(`  ... 还有 ${hidden} 条建议未显示（--verbose 查看全部）`),
+    )
   }
   return lines.join('\n')
 }

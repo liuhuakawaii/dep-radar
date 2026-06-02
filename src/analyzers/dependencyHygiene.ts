@@ -35,6 +35,8 @@ export interface HygieneIssue {
   declaredIn: string
   /** 建议移动到的位置（仅 misplaced） */
   suggestedLocation?: string
+  /** 保留原因（当包被判定为应保留时） */
+  keepReason?: string
 }
 
 export interface HygieneOptions {
@@ -89,6 +91,9 @@ export function detectHygieneIssues(
       runtimePackagesSet.has(entry.packageName)
     )
       continue
+
+    // 框架必需依赖不标记为 unused
+    if (entry.usageClass === 'framework-required') continue
 
     const reach =
       reachabilityMap.get(entry.name) ?? reachabilityMap.get(entry.packageName)

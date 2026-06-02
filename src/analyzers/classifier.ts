@@ -244,7 +244,69 @@ const CLI_RULES: NameRule[] = [
 ]
 
 /** 合并所有规则（按优先级：build > test > script） */
-const ALL_RULES: NameRule[] = [...BUILD_RULES, ...TEST_RULES, ...CLI_RULES]
+// 框架必需依赖（框架生态中必需但可能无源码直接引用的包）
+const FRAMEWORK_RULES: NameRule[] = [
+  // React Native 生态
+  {
+    pattern: /^react-native$/,
+    usageClass: 'framework-required',
+    description: 'React Native 核心',
+  },
+  {
+    pattern: /^react-native-gesture-handler$/,
+    usageClass: 'framework-required',
+    description: 'RN 手势处理',
+  },
+  {
+    pattern: /^react-native-reanimated$/,
+    usageClass: 'framework-required',
+    description: 'RN 动画库',
+  },
+  {
+    pattern: /^react-native-screens$/,
+    usageClass: 'framework-required',
+    description: 'RN 屏幕管理',
+  },
+  {
+    pattern: /^react-native-safe-area-context$/,
+    usageClass: 'framework-required',
+    description: 'RN 安全区域',
+  },
+  // Expo 生态
+  {
+    pattern: /^expo$/,
+    usageClass: 'framework-required',
+    description: 'Expo SDK 核心',
+  },
+  {
+    pattern: /^expo-router$/,
+    usageClass: 'framework-required',
+    description: 'Expo 路由',
+  },
+  {
+    pattern: /^expo-status-bar$/,
+    usageClass: 'framework-required',
+    description: 'Expo 状态栏',
+  },
+  {
+    pattern: /^expo-splash-screen$/,
+    usageClass: 'framework-required',
+    description: 'Expo 启动屏',
+  },
+  // Next.js 生态
+  {
+    pattern: /^next$/,
+    usageClass: 'framework-required',
+    description: 'Next.js 核心',
+  },
+]
+
+const ALL_RULES: NameRule[] = [
+  ...BUILD_RULES,
+  ...TEST_RULES,
+  ...CLI_RULES,
+  ...FRAMEWORK_RULES,
+]
 
 // =====================================================================
 // 主函数

@@ -54,6 +54,7 @@ export async function buildInventory(
   const isIgnored = buildIgnoreMatcher(ignore)
 
   // 按 fallback 链尝试各数据源
+  // bun.lockb 是二进制格式，无法直接解析，跳过到 node_modules
   const result =
     (await tryNpmLockfile(projectPath, pkg, includeDev)) ??
     (await tryPnpmLockfile(projectPath, pkg, includeDev)) ??
@@ -137,30 +138,44 @@ function parseNpmLockPackages(
   // 收集 direct dependencies
   const directDeps = collectDirectDeps(pkg, includeDev)
 
-  // 遍历所有 packages 条目
-  for (const [pkgPath, manifest] of Object.entries(packages)) {
-    if (pkgPath === '') continue // 跳过 root
-    if (manifest.link) continue // 跳过 workspace links
+  // 构建依赖图：name@version → 其依赖列表
+  const depGraph = new Map<string, Record<string, string>>()
+  const nameVersionMap = new Map<string, string>() // name → version
 
-    // 从路径提取包名：node_modules/@scope/pkg → @scope/pkg，node_modules/pkg → pkg
+  // 第一遍：收集所有包的版本和依赖关系
+  for (const [pkgPath, manifest] of Object.entries(packages)) {
+    if (pkgPath === '') continue
+    if (manifest.link) continue
+    const name = extractNameFromNpmPath(pkgPath)
+    if (!name || !manifest.version) continue
+    nameVersionMap.set(name, manifest.version)
+    if (manifest.dependencies) {
+      depGraph.set(
+        `${name}@${manifest.version}`,
+        manifest.dependencies as Record<string, string>,
+      )
+    }
+  }
+
+  // 第二遍：构建 entries
+  const directEntries = new Map<string, DependencyEntry>()
+  for (const [pkgPath, manifest] of Object.entries(packages)) {
+    if (pkgPath === '') continue
+    if (manifest.link) continue
     const name = extractNameFromNpmPath(pkgPath)
     if (!name) continue
-
     const version = manifest.version
     if (!version) continue
 
-    // 检查是否为直接依赖
     const directSpec = directDeps.get(name)
     const isDirect = directSpec !== undefined
-
-    // 检查是否为 alias
     const { packageName, isAlias, aliasOf, requestedSpec } = resolveAlias(
       name,
       directSpec ?? '',
       pkg,
     )
 
-    entries.push({
+    const entry: DependencyEntry = {
       name,
       packageName,
       requestedSpec: requestedSpec || `transitive:${name}`,
@@ -174,10 +189,62 @@ function parseNpmLockPackages(
       resolvedFrom: 'package-lock.json',
       confidence: 'high',
       paths: [[name]],
-    })
+    }
+    entries.push(entry)
+    if (isDirect) directEntries.set(name, entry)
+  }
+
+  // 第三遍：为 transitive 依赖计算最短路径
+  for (const entry of entries) {
+    if (entry.isDirect) continue
+    const path = findShortestPathNpm(
+      entry.name,
+      directEntries,
+      depGraph,
+      nameVersionMap,
+    )
+    if (path.length > 0) entry.paths = [path]
   }
 
   return { entries, resolvedFrom: 'package-lock.json', warnings }
+}
+
+/**
+ * npm lockfile 的最短路径查找（BFS）
+ */
+function findShortestPathNpm(
+  targetName: string,
+  directEntries: Map<string, DependencyEntry>,
+  depGraph: Map<string, Record<string, string>>,
+  nameVersionMap: Map<string, string>,
+): string[] {
+  const queue: string[][] = []
+  for (const [name, entry] of directEntries) {
+    queue.push([name, entry.packageName])
+  }
+  const visited = new Set<string>()
+
+  while (queue.length > 0) {
+    const path = queue.shift()!
+    const currentName = path[path.length - 1]!
+    const currentVersion = nameVersionMap.get(currentName)
+    const graphKey = currentVersion
+      ? `${directEntries.get(currentName)?.packageName ?? currentName}@${currentVersion}`
+      : null
+    if (!graphKey) continue
+    if (visited.has(graphKey)) continue
+    visited.add(graphKey)
+
+    const deps = depGraph.get(graphKey)
+    if (!deps) continue
+    for (const depName of Object.keys(deps)) {
+      if (depName === targetName) return [...path, depName]
+      if (!visited.has(`${depName}@${nameVersionMap.get(depName)}`)) {
+        queue.push([...path, depName])
+      }
+    }
+  }
+  return []
 }
 
 /**
@@ -283,23 +350,31 @@ function parsePnpmLockfile(
     ...(rootImporter.optionalDependencies ?? {}),
   }
 
-  // packages 中的版本信息（用于解析 transitive）
+  // 构建依赖图：packageName@version → 其依赖列表
+  const depGraph = new Map<string, Record<string, string>>()
   const packageVersions = new Map<string, string>()
   if (lockfile.packages) {
-    for (const [pkgId, _manifest] of Object.entries(lockfile.packages)) {
-      // pnpm v9 key 格式: name@version 或 @scope/pkg@version
+    for (const [pkgId, manifest] of Object.entries(lockfile.packages)) {
       const parsed = parsePnpmPackageKey(pkgId)
-      if (parsed) {
-        // 保留每个包的最新版本（如果有多个）
-        const existing = packageVersions.get(parsed.name)
-        if (!existing || semver.gt(parsed.version, existing)) {
-          packageVersions.set(parsed.name, parsed.version)
-        }
+      if (!parsed) continue
+
+      // 保留每个包的最新版本
+      const existing = packageVersions.get(parsed.name)
+      if (!existing || semver.gt(parsed.version, existing)) {
+        packageVersions.set(parsed.name, parsed.version)
       }
+
+      // 记录依赖关系
+      const key = `${parsed.name}@${parsed.version}`
+      depGraph.set(key, {
+        ...(manifest.dependencies ?? {}),
+        ...(manifest.optionalDependencies ?? {}),
+      })
     }
   }
 
   // 处理直接依赖
+  const directEntries = new Map<string, DependencyEntry>()
   for (const [name, depInfo] of Object.entries(allDirect)) {
     const version = resolvePnpmVersion(depInfo.version, name, lockfile.packages)
     if (!version) {
@@ -314,7 +389,7 @@ function parsePnpmLockfile(
       pkg,
     )
 
-    entries.push({
+    const entry: DependencyEntry = {
       name,
       packageName,
       requestedSpec: requestedSpec || depInfo.specifier || `transitive:${name}`,
@@ -326,16 +401,26 @@ function parsePnpmLockfile(
       resolvedFrom: 'pnpm-lock.yaml',
       confidence: 'high',
       paths: [[name]],
-    })
+    }
+    entries.push(entry)
+    directEntries.set(name, entry)
   }
 
-  // 收集 transitive 依赖
+  // 收集 transitive 依赖并构建依赖路径
   const directNames = new Set(entries.map(e => e.packageName))
   if (lockfile.packages) {
     for (const [pkgId] of Object.entries(lockfile.packages)) {
       const parsed = parsePnpmPackageKey(pkgId)
       if (!parsed) continue
-      if (directNames.has(parsed.name)) continue // 已作为直接依赖处理
+      if (directNames.has(parsed.name)) continue
+
+      // 构建依赖路径：从直接依赖到此 transitive 包的最短路径
+      const depPath = findShortestPath(
+        parsed.name,
+        parsed.version,
+        directEntries,
+        depGraph,
+      )
 
       entries.push({
         name: parsed.name,
@@ -347,12 +432,65 @@ function parsePnpmLockfile(
         isAlias: false,
         resolvedFrom: 'pnpm-lock.yaml',
         confidence: 'high',
-        paths: [[parsed.name]],
+        paths: depPath.length > 0 ? [depPath] : [[parsed.name]],
       })
     }
   }
 
   return { entries, resolvedFrom: 'pnpm-lock.yaml', warnings }
+}
+
+/**
+ * 查找从直接依赖到目标包的最短依赖路径
+ *
+ * BFS 遍历依赖图，返回路径如 ['react', 'loose-envify', 'js-tokens']
+ */
+function findShortestPath(
+  targetName: string,
+  _targetVersion: string,
+  directEntries: Map<string, DependencyEntry>,
+  depGraph: Map<string, Record<string, string>>,
+): string[] {
+  // BFS: queue = [当前路径]
+  const queue: string[][] = []
+
+  // 从所有直接依赖开始
+  for (const [name, entry] of directEntries) {
+    queue.push([name, entry.packageName])
+  }
+
+  const visited = new Set<string>()
+
+  while (queue.length > 0) {
+    const path = queue.shift()!
+    const currentName = path[path.length - 1]!
+    const currentEntry = directEntries.get(currentName)
+    const currentVersion = currentEntry?.resolvedVersion
+    const graphKey = currentVersion
+      ? `${currentEntry!.packageName}@${currentVersion}`
+      : null
+
+    if (!graphKey) continue
+    if (visited.has(graphKey)) continue
+    visited.add(graphKey)
+
+    const deps = depGraph.get(graphKey)
+    if (!deps) continue
+
+    for (const [depName, depVersionRef] of Object.entries(deps)) {
+      const depVersion = resolvePnpmVersion(depVersionRef, depName, undefined)
+      if (depName === targetName) {
+        return [...path, depName]
+      }
+      // 继续搜索
+      const childKey = `${depName}@${depVersion}`
+      if (!visited.has(childKey)) {
+        queue.push([...path, depName])
+      }
+    }
+  }
+
+  return []
 }
 
 /**

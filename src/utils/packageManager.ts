@@ -22,6 +22,8 @@ const execFileP = promisify(execFile)
  */
 export function detectPackageManager(cwd: string): PackageManager {
   if (existsSync(join(cwd, 'pnpm-lock.yaml'))) return 'pnpm'
+  if (existsSync(join(cwd, 'bun.lockb'))) return 'bun'
+  if (existsSync(join(cwd, 'bun.lock'))) return 'bun'
   if (existsSync(join(cwd, 'yarn.lock'))) return 'yarn'
   if (existsSync(join(cwd, 'package-lock.json'))) return 'npm'
   return 'npm'
@@ -67,6 +69,11 @@ export const PM_COMMANDS: Record<
     list: { cmd: 'yarn', args: ['info', '--json', '--recursive'] },
     audit: { cmd: 'yarn', args: ['npm', 'audit', '--json'] },
     auditAll: { cmd: 'yarn', args: ['npm', 'audit', '--json'] },
+  },
+  bun: {
+    list: { cmd: 'bun', args: ['pm', 'ls', '--all', '--json'] },
+    audit: { cmd: 'bun', args: ['audit', '--json'] },
+    auditAll: { cmd: 'bun', args: ['audit', '--json'] },
   },
 }
 

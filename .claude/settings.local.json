@@ -11,7 +11,9 @@
       "WebSearch",
       "Bash(npm view *)",
       "Bash(npm pack *)",
-      "Bash(pnpm typecheck *)"
+      "Bash(pnpm typecheck *)",
+      "Bash(pnpm ls *)",
+      "Bash(pnpm install *)"
     ]
   }
 }

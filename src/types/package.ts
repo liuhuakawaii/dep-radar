@@ -27,4 +27,4 @@ export interface PackageJson {
  * - src/utils/packageManager.ts: detectPackageManager / PM_COMMANDS
  * - src/analyzers/security.ts: audit 输出解析适配
  */
-export type PackageManager = 'npm' | 'pnpm' | 'yarn'
+export type PackageManager = 'npm' | 'pnpm' | 'yarn' | 'bun'

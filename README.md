@@ -20,7 +20,7 @@
 - 优化建议引擎（内置常用替代方案，可扩展）
 - 多种报告格式（终端 / JSON / HTML / Markdown）
 
-详细技术方案见仓库根目录的 `PLAN-v2.md`。
+详细功能说明见 `FEATURES.md`。
 
 ---
 
@@ -33,7 +33,7 @@ npm i -g @liuhuakawaii/dep-radar
 pnpm add -g @liuhuakawaii/dep-radar
 
 # 直接运行（无需安装）
-npx @liuhuakawaii/dep-radar analyze
+npx @liuhuakawaii/dep-radar scan
 ```
 
 > npm 包名是 `@liuhuakawaii/dep-radar`，但 CLI 命令是 `dep-radar`。
@@ -43,20 +43,23 @@ npx @liuhuakawaii/dep-radar analyze
 ## 快速上手
 
 ```bash
-# 分析当前项目体积（默认 TOP 10）
-dep-radar analyze
+# 扫描项目依赖，输出审查结果和优化建议（默认命令）
+dep-radar scan
 
-# 跨维度聚合分析 + 优化建议（最常用的命令）
-dep-radar optimize
+# CI 模式：只对高优先级问题返回非零退出码
+dep-radar scan --ci
 
-# 查看依赖树
-dep-radar tree
+# 深度模式：完整 lock 文件扫描（更慢但更全面）
+dep-radar scan --deep
 
 # 输出 JSON 到文件（适合 CI 集成）
-dep-radar analyze --format json --output dep-report.json
+dep-radar scan --format json --output dep-report.json
 
-# 生成 HTML 报告
-dep-radar optimize --format html --output dep-report.html
+# 解释单个依赖为什么存在
+dep-radar explain lodash
+
+# 检查项目依赖健康基线
+dep-radar doctor
 ```
 
 ---
@@ -157,51 +160,44 @@ export GITHUB_TOKEN="ghp_xxx"
 
 ## CLI 参考
 
-### `analyze`（单/多维度详查）
+### `scan`（日常依赖审查与优化建议）
 
-| 选项                 | 说明                                                              |
-| -------------------- | ----------------------------------------------------------------- |
-| `--only <dims>`      | `size`（默认）/ `health`/`license`/`security`（逗号分隔或 `all`） |
-| `--format <type>`    | `terminal`（默认） / `json` / `html` / `markdown`                 |
-| `--output <path>`    | 写入文件                                                          |
-| `--top <n>`          | 显示前 N 个体积大户（默认 10，仅 size 维度）                      |
-| `--include-dev`      | 同时分析 `devDependencies`                                        |
-| `--since <ref>`      | 增量分析：只分析相对于指定 git ref 变更的依赖                     |
-| `--workspace <name>` | 分析指定工作区子包                                                |
-| `--all-workspaces`   | 分析所有工作区子包并汇总                                          |
+替代原 `analyze` + `optimize` + `report`，统一为一个命令。默认只输出可操作建议。
 
-### `optimize`（跨维度聚合 + 生成可操作建议）
+| 选项                 | 说明                                                   |
+| -------------------- | ------------------------------------------------------ |
+| `--ci`               | CI 模式：只对高优先级问题返回非零退出码                |
+| `--deep`             | 深度模式：完整 lock 文件扫描（更慢但更全面）           |
+| `--format <type>`    | `terminal`（默认） / `json` / `html` / `markdown`      |
+| `--output <path>`    | 写入文件                                               |
+| `--include-dev`      | 同时分析 `devDependencies`                             |
+| `--skip-health`      | 跳过健康度维度（避免 GitHub API 调用，速度更快）       |
+| `--skip-license`     | 跳过许可证维度                                         |
+| `--skip-security`    | 跳过安全审计维度                                       |
+| `--scope <scope>`    | 体积分析范围：`runtime`（默认）/ `all` / `non-runtime` |
+| `--stats <file>`     | webpack stats.json 路径（真实 bundle 分析）            |
+| `--assets-dir <dir>` | 构建输出目录（计算实际 gzip）                          |
+| `--since <ref>`      | 增量分析：只分析相对于指定 git ref 变更的依赖          |
+| `--workspace <name>` | 分析指定工作区子包                                     |
+| `--all-workspaces`   | 分析所有工作区子包并汇总                               |
 
-| 选项                 | 说明                                              |
-| -------------------- | ------------------------------------------------- |
-| `--format <type>`    | `terminal`（默认） / `json` / `html` / `markdown` |
-| `--output <path>`    | 写入文件                                          |
-| `--include-dev`      | 同时分析 `devDependencies`                        |
-| `--skip-health`      | 跳过健康度维度（避免 GitHub API 调用，速度更快）  |
-| `--skip-license`     | 跳过许可证维度                                    |
-| `--skip-security`    | 跳过安全审计维度                                  |
-| `--workspace <name>` | 分析指定工作区子包                                |
-| `--all-workspaces`   | 分析所有工作区子包并汇总                          |
+### `explain`（解释单个依赖）
 
-### `tree`（依赖树可视化）
+| 选项              | 说明                        |
+| ----------------- | --------------------------- |
+| `<package>`       | 要解释的包名（必填）        |
+| `[path]`          | 项目路径（默认 `.`）        |
+| `--format <type>` | `terminal`（默认） / `json` |
+| `--include-dev`   | 同时分析 `devDependencies`  |
 
-| 选项                 | 说明                             |
-| -------------------- | -------------------------------- |
-| `--depth <n>`        | 最大深度（默认 5）               |
-| `--no-hints`         | 不显示优化提示（`[!]` 替代建议） |
-| `--workspace <name>` | 查看指定工作区子包的依赖树       |
+### `doctor`（项目健康检查）
 
-### `compare`（对比两个项目的依赖差异）
+纯本地检查，不发网络请求。
 
-| 选项                  | 说明                                                                |
-| --------------------- | ------------------------------------------------------------------- |
-| `--include-dev`       | 同时比较 `devDependencies`                                          |
-| `--dimensions <dims>` | 比较维度，逗号分隔：`size`, `health`, `license`（默认 `size`）      |
-| `--since <ref>`       | 增量对比：与指定 git ref 的 package.json 对比（忽略第二个路径参数） |
-
-### `report`（生成完整分析报告）
-
-等价于 `optimize --format <fmt>`，额外支持 `--output` 指定输出路径（默认按格式生成文件名）。支持 `--format html|json|markdown`、`--skip-health`、`--skip-license`、`--skip-security`、`--workspace`、`--all-workspaces` 选项。
+| 选项              | 说明                        |
+| ----------------- | --------------------------- |
+| `[path]`          | 项目路径（默认 `.`）        |
+| `--format <type>` | `terminal`（默认） / `json` |
 
 ### 全局选项
 
@@ -217,13 +213,13 @@ export GITHUB_TOKEN="ghp_xxx"
 
 ### CI 集成的退出码
 
-| 码  | 含义                                                  |
-| --- | ----------------------------------------------------- |
-| 0   | OK                                                    |
-| 1   | 通用错误（IO / 网络 / 配置）                          |
-| 2   | 发现高危 / 严重漏洞                                   |
-| 3   | 体积超出 `budget`（`analyze --only size` 时）         |
-| 4   | 检测到高风险许可证冲突（`analyze --only license` 时） |
+| 码  | 含义                                                            |
+| --- | --------------------------------------------------------------- |
+| 0   | OK                                                              |
+| 1   | 通用错误（IO / 网络 / 配置）                                    |
+| 2   | 发现高危 / 严重漏洞（`scan --ci` 时 direct prod critical/high） |
+| 3   | 体积超出 `budget`                                               |
+| 4   | 检测到高风险许可证冲突                                          |
 
 ---
 
@@ -268,12 +264,12 @@ CLI (cli.ts)
 **添加新分析维度**：
 
 1. 在 `src/analyzers/` 新建分析器（接收 Fetcher 接口，返回结果类型）
-2. 在 `src/commands/analyze.ts` 和 `optimize.ts` 中接入
+2. 在 `src/commands/scan.ts` 中接入
 
 **添加新报告格式**：
 
 1. 在 `src/report/` 新建文件，导出 `(report: AnalysisReport) => string`
-2. 在 `src/commands/analyze.ts` 的 `renderReport()` 中添加 case
+2. 在 `src/commands/shared.ts` 的 `renderReport()` 中添加 case
 
 **自定义替代方案**：
 
@@ -352,7 +348,7 @@ dep-radar/
 | 缓存路径    | env-paths             | 跨平台正确                         |
 | 配置文件    | cosmiconfig           | 业界标准，多格式支持               |
 
-> 详见 `PLAN-v2.md` 第八章「关键技术决策记录」。
+> 详见 `FEATURES.md`。
 
 ---
 
