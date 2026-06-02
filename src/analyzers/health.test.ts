@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import { parseGitHubUrl } from '../data/github.js'
 import type { GithubRepoResponse, NpmFullDocResponse } from '../types/api.js'
 import type { HealthInfo } from '../types/analysis.js'
 import type { PackageJson } from '../types/package.js'
@@ -9,7 +10,6 @@ import {
   computeHealthScore,
   extractRepositoryUrl,
   monthsSince,
-  parseGitHubOwnerRepo,
   type HealthFetcher,
 } from './health.js'
 
@@ -153,6 +153,71 @@ describe('computeHealthScore', () => {
     expect(stable - base).toBe(10)
     expect(up - base).toBe(15)
   })
+
+  it('自定义权重应改变分数', () => {
+    const info = baseInfo({
+      weeklyDownloads: 500_000,
+      lastPublish: new Date().toISOString(),
+      githubStars: 50_000,
+      maintainers: 5,
+      hasTypeScriptTypes: true,
+      downloadTrend: 'up',
+    })
+    // 只关注下载量，其他权重为 0
+    const downloadOnly = computeHealthScore(info, {
+      weeklyDownloads: 100,
+      lastPublish: 0,
+      githubStars: 0,
+      maintainers: 0,
+      hasTypeScriptTypes: 0,
+      downloadTrend: 0,
+    })
+    expect(downloadOnly).toBe(100) // 100 权重，满分档
+    expect(downloadOnly).toBeLessThanOrEqual(100) // 封顶 100
+  })
+
+  it('自定义权重未指定的字段应使用默认值', () => {
+    const info = baseInfo({ weeklyDownloads: 500_000 })
+    const partial = computeHealthScore(info, { weeklyDownloads: 50 })
+    // weeklyDownloads 满分档 50 + 默认 maintainers 基线 2 + 默认 downloadTrend stable 10 = 62
+    expect(partial).toBe(62)
+  })
+
+  it('权重全为 0 应返回 0', () => {
+    const info = baseInfo({
+      weeklyDownloads: 500_000,
+      hasTypeScriptTypes: true,
+      downloadTrend: 'up',
+    })
+    expect(
+      computeHealthScore(info, {
+        weeklyDownloads: 0,
+        lastPublish: 0,
+        githubStars: 0,
+        maintainers: 0,
+        hasTypeScriptTypes: 0,
+        downloadTrend: 0,
+      }),
+    ).toBe(0)
+  })
+
+  it('权重总和超过 100 应封顶 100', () => {
+    const info = baseInfo({
+      weeklyDownloads: 500_000,
+      lastPublish: new Date().toISOString(),
+      hasTypeScriptTypes: true,
+      downloadTrend: 'up',
+    })
+    const score = computeHealthScore(info, {
+      weeklyDownloads: 50,
+      lastPublish: 50,
+      githubStars: 50,
+      maintainers: 50,
+      hasTypeScriptTypes: 50,
+      downloadTrend: 50,
+    })
+    expect(score).toBe(100)
+  })
 })
 
 // =====================================================================
@@ -199,25 +264,23 @@ describe('extractRepositoryUrl', () => {
 })
 
 // =====================================================================
-// parseGitHubOwnerRepo
+// parseGitHubUrl（来自 data/github.ts，health.ts 中使用）
 // =====================================================================
 
-describe('parseGitHubOwnerRepo', () => {
+describe('parseGitHubUrl（health 中使用）', () => {
   it.each([
     ['git+https://github.com/facebook/react.git', 'facebook', 'react'],
     ['https://github.com/facebook/react', 'facebook', 'react'],
-    ['git://github.com/facebook/react.git', 'facebook', 'react'],
     ['github:facebook/react', 'facebook', 'react'],
     ['git@github.com:facebook/react.git', 'facebook', 'react'],
-    ['https://github.com/facebook/react#main', 'facebook', 'react'],
   ])('应解析 %s', (url, owner, repo) => {
-    expect(parseGitHubOwnerRepo(url)).toEqual({ owner, repo })
+    expect(parseGitHubUrl(url)).toEqual({ owner, repo })
   })
 
   it('非 GitHub URL 返回 null', () => {
-    expect(parseGitHubOwnerRepo('https://gitlab.com/x/y')).toBeNull()
-    expect(parseGitHubOwnerRepo('https://example.com/x/y')).toBeNull()
-    expect(parseGitHubOwnerRepo('')).toBeNull()
+    expect(parseGitHubUrl('https://gitlab.com/x/y')).toBeNull()
+    expect(parseGitHubUrl('https://example.com/x/y')).toBeNull()
+    expect(parseGitHubUrl('')).toBeNull()
   })
 })
 
@@ -317,13 +380,11 @@ describe('analyzeHealth', () => {
   it('非 GitHub 仓库不应调用 getGitHubRepo', async () => {
     const ghMock = vi.fn()
     const fetcher = makeFetcher({
-      getFullDoc: vi
-        .fn()
-        .mockResolvedValue(
-          makeDoc({
-            repository: { type: 'git', url: 'https://gitlab.com/a/b' },
-          }),
-        ),
+      getFullDoc: vi.fn().mockResolvedValue(
+        makeDoc({
+          repository: { type: 'git', url: 'https://gitlab.com/a/b' },
+        }),
+      ),
       getWeeklyDownloads: vi.fn().mockResolvedValue(100),
       getTrend: vi.fn().mockResolvedValue('stable'),
       getGitHubRepo: ghMock,

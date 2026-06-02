@@ -90,6 +90,25 @@ export class DataCache {
   }
 
   /**
+   * 带缓存的异步操作包装
+   *
+   * 先查缓存，命中则直接返回；未命中则执行 fetchFn，成功后写入缓存。
+   * fetchFn 抛错时不写缓存，直接向上抛出。
+   *
+   * @example
+   * const data = await cache.withCache('pkg-size/lodash@4.17.21', () =>
+   *   fetchJson('https://pkg-size.dev/api/lodash@4.17.21')
+   * )
+   */
+  async withCache<T>(key: string, fetchFn: () => Promise<T>): Promise<T> {
+    const cached = await this.get<T>(key)
+    if (cached !== null) return cached
+    const result = await fetchFn()
+    await this.set(key, result)
+    return result
+  }
+
+  /**
    * 清空整个缓存目录
    *
    * 用于 `dep-radar cache clear` 命令。

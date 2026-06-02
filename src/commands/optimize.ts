@@ -1,9 +1,9 @@
 /**
- * `optimize` 命令：聚合 bundle + health + license 数据并生成可操作建议
+ * `optimize` 命令：聚合 bundle + health + license + security 数据并生成可操作建议
  *
  * 流程：
  *   1. 加载配置 + 读 package.json
- *   2. **并行**跑三个 analyzer（避免依赖串行带来的等待）
+ *   2. **并行**跑四个 analyzer（避免依赖串行带来的等待）
  *   3. 把结果喂给 generateOptimizations
  *   4. 把建议填到 AnalysisReport.optimizations 后渲染
  *
@@ -17,30 +17,41 @@
  *     （避免 CI 因为内置建议表更新而突然失败）
  */
 
+import { execFile } from 'node:child_process'
 import { writeFile } from 'node:fs/promises'
+import { promisify } from 'node:util'
 
 import ora from 'ora'
+
+const execFileP = promisify(execFile)
 
 import { analyzeBundleSize } from '../analyzers/bundle.js'
 import { analyzeHealth } from '../analyzers/health.js'
 import { analyzeLicenses } from '../analyzers/license.js'
+import { analyzeSecurity, type AuditExecutor } from '../analyzers/security.js'
 import { generateOptimizations } from '../analyzers/optimizer.js'
 import { loadUserConfig } from '../config/loader.js'
 import { ConfigError, PackageNotFoundError } from '../errors/index.js'
 import type { AnalysisReport } from '../types/analysis.js'
 import { EXIT_CODES, type ExitCode } from '../utils/exitCode.js'
 import { readPackageJson } from '../utils/fs.js'
+import { stripAnsi } from '../utils/format.js'
 import { logger } from '../utils/logger.js'
-import { detectPackageManager } from '../utils/packageManager.js'
+import {
+  detectPackageManager,
+  detectYarnVersion,
+  PM_COMMANDS,
+  YARN_CLASSIC_COMMANDS,
+} from '../utils/packageManager.js'
 
-import { renderReport } from './analyze.js'
+import { createCacheFromGlobals, renderReport } from './analyze.js'
 import { buildBundleFetcher } from './buildBundleFetcher.js'
 import { buildHealthFetcher } from './buildHealthFetcher.js'
 import { buildLicenseFetcher } from './buildLicenseFetcher.js'
 
 export interface OptimizeOptions {
   /** 输出格式；默认 terminal */
-  format?: 'terminal' | 'json' | 'html'
+  format?: 'terminal' | 'json' | 'html' | 'markdown'
   /** 输出文件 */
   output?: string
   /** 是否同时分析 devDependencies */
@@ -49,6 +60,16 @@ export interface OptimizeOptions {
   skipHealth?: boolean
   /** 跳过 license 维度（仅基于 size + health + 内置规则） */
   skipLicense?: boolean
+  /** 跳过 security 维度（仅基于 size + health + license + 内置规则） */
+  skipSecurity?: boolean
+  /** CLI 全局选项中的缓存开关（--no-cache 时为 false） */
+  cacheEnabled?: boolean
+  /** CLI 全局选项中的缓存目录 */
+  cacheDir?: string
+  /** 自定义 npm registry URL */
+  registry?: string
+  /** 并发请求数；默认 5 */
+  concurrency?: number
 }
 
 export async function optimizeCommand(
@@ -61,6 +82,11 @@ export async function optimizeCommand(
     includeDev = false,
     skipHealth = false,
     skipLicense = false,
+    skipSecurity = false,
+    cacheEnabled,
+    cacheDir,
+    registry,
+    concurrency,
   } = options
 
   // ----------- 1. setup -----------
@@ -89,35 +115,102 @@ export async function optimizeCommand(
 
   const pm = detectPackageManager(projectPath)
 
-  // ----------- 2. 并行跑三个 analyzer -----------
+  // 创建缓存实例
+  const cache = createCacheFromGlobals({
+    cacheEnabled,
+    cacheDir,
+    cacheTTL: config.cacheTTL,
+  })
+
+  // registry 优先级：CLI --registry > config.registry
+  const resolvedRegistry = registry ?? config.registry
+
+  // concurrency 优先级：CLI --concurrency > config.concurrency > 默认 5
+  const resolvedConcurrency = concurrency ?? config.concurrency ?? 5
+
+  // ----------- 2. 并行跑四个 analyzer -----------
+  // yarn classic 使用不同的 audit 命令
+  let auditCmd = PM_COMMANDS[pm].audit
+  if (pm === 'yarn') {
+    const yarnVersion = await detectYarnVersion(projectPath)
+    if (yarnVersion === 'classic') auditCmd = YARN_CLASSIC_COMMANDS.audit
+  }
+  const defaultAuditExecutor: AuditExecutor = {
+    async execute(cmd, args, cwd) {
+      return execFileP(cmd, args, {
+        cwd,
+        maxBuffer: 10 * 1024 * 1024, // 10MB
+      })
+    },
+  }
+
   const spinner = ora('正在跑全维度分析...').start()
-  let bundles, healthList, licenses
+  let bundles, healthList, licenses, securityResult
   try {
     const bundleP = analyzeBundleSize(
       pkg,
-      buildBundleFetcher({ dataSource: config.dataSource }),
-      { concurrency: 5, includeDev, ignore: config.ignore },
+      buildBundleFetcher({
+        dataSource: config.dataSource,
+        cache,
+        bundlephobiaRecord: config.bundlephobiaRecord,
+      }),
+      {
+        concurrency: resolvedConcurrency,
+        includeDev,
+        ignore: config.ignore,
+        onProgress: ({ current, total, name }) => {
+          spinner.text = `正在分析体积 [${current}/${total}] ${name}...`
+        },
+      },
     )
     const healthP = skipHealth
       ? Promise.resolve({ health: [], skipped: [] })
-      : analyzeHealth(pkg, buildHealthFetcher(), {
-          concurrency: 5,
-          includeDev,
-          ignore: config.ignore,
-        })
+      : analyzeHealth(
+          pkg,
+          buildHealthFetcher({ cache, registry: resolvedRegistry }),
+          {
+            concurrency: resolvedConcurrency,
+            includeDev,
+            ignore: config.ignore,
+            healthWeights: config.healthWeights,
+            onProgress: ({ current, total, name }) => {
+              spinner.text = `正在分析健康度 [${current}/${total}] ${name}...`
+            },
+          },
+        )
     const licenseP = skipLicense
       ? Promise.resolve({ licenses: [], projectConflicts: [], skipped: [] })
-      : analyzeLicenses(pkg, buildLicenseFetcher(), {
-          concurrency: 5,
+      : analyzeLicenses(
+          pkg,
+          buildLicenseFetcher({ cache, registry: resolvedRegistry }),
+          {
+            concurrency: resolvedConcurrency,
+            includeDev,
+            ignore: config.ignore,
+          },
+        )
+    const securityP = skipSecurity
+      ? Promise.resolve({
+          security: [],
+          skipped: [],
+          summary: { critical: 0, high: 0, moderate: 0, low: 0 },
+        })
+      : analyzeSecurity(auditCmd, pm, projectPath, defaultAuditExecutor, {
           includeDev,
           ignore: config.ignore,
         })
 
-    const [bRes, hRes, lRes] = await Promise.all([bundleP, healthP, licenseP])
+    const [bRes, hRes, lRes, sRes] = await Promise.all([
+      bundleP,
+      healthP,
+      licenseP,
+      securityP,
+    ])
     spinner.succeed('分析完成')
     bundles = bRes
     healthList = hRes
     licenses = lRes
+    securityResult = sRes
   } catch (err) {
     spinner.fail('分析失败')
     logger.error(err instanceof Error ? err.message : String(err))
@@ -129,7 +222,7 @@ export async function optimizeCommand(
     bundles: bundles.bundles,
     health: healthList.health,
     licenses: licenses.licenses,
-    security: [], // Phase 3 接入
+    security: securityResult.security,
     userReplacements: config.replacements,
   })
 
@@ -142,7 +235,7 @@ export async function optimizeCommand(
       size: true,
       health: !skipHealth,
       license: !skipLicense,
-      security: false,
+      security: !skipSecurity,
       optimize: true,
     },
     summary: {
@@ -150,7 +243,7 @@ export async function optimizeCommand(
       totalSize: bundles.totalSize,
       totalGzip: bundles.totalGzip,
       maxDepth: 0,
-      vulnerabilities: { critical: 0, high: 0, moderate: 0, low: 0 },
+      vulnerabilities: securityResult.summary,
       licenseIssues: licenses.licenses.filter(l => l.risk !== 'low').length,
       optimizationCount: optimizations.length,
       deprecatedCount: healthList.health.filter(h => h.deprecated).length,
@@ -158,7 +251,7 @@ export async function optimizeCommand(
     bundles: bundles.bundles,
     health: healthList.health,
     licenses: licenses.licenses,
-    security: [],
+    security: securityResult.security,
     optimizations,
   }
 
@@ -166,7 +259,9 @@ export async function optimizeCommand(
   const rendered = renderReport(report, format)
   if (output) {
     try {
-      await writeFile(output, rendered, 'utf-8')
+      // terminal 格式写文件时去除 ANSI 转义码，避免乱码
+      const content = format === 'terminal' ? stripAnsi(rendered) : rendered
+      await writeFile(output, content, 'utf-8')
       logger.success(`报告已写入 ${output}`)
     } catch (err) {
       logger.error(

@@ -42,10 +42,10 @@ export function isOffline(): boolean {
 /**
  * 全局 User-Agent
  *
- * TODO: 接入 build 阶段注入的 __DEP_RADAR_VERSION__，
- * 避免在多个文件中重复维护版本号。
+ * 版本号通过 tsup define 在构建时注入（仅 CLI 入口）。
  */
-const USER_AGENT = 'dep-radar/0.1.0'
+declare const __DEP_RADAR_VERSION__: string
+const USER_AGENT = `dep-radar/${typeof __DEP_RADAR_VERSION__ !== 'undefined' ? __DEP_RADAR_VERSION__ : 'dev'}`
 
 export interface FetchOptions {
   /** 单次请求超时（毫秒），默认 10000 */

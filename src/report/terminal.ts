@@ -22,7 +22,12 @@ import type {
   OptimizationSuggestion,
   SecurityInfo,
 } from '../types/analysis.js'
-import { formatBytes, formatDate, formatNumber } from '../utils/format.js'
+import {
+  formatBytes,
+  formatDate,
+  formatNumber,
+  formatRelativeTime,
+} from '../utils/format.js'
 
 /**
  * 渲染完整报告
@@ -191,7 +196,7 @@ function renderHealthSection(health: HealthInfo[]): string {
       h.name,
       scoreColor(`${h.healthScore}`),
       formatNumber(h.weeklyDownloads),
-      formatDate(h.lastPublish),
+      formatRelativeTime(h.lastPublish),
       h.deprecated ? chalk.red('是') : chalk.gray('否'),
       h.hasTypeScriptTypes ? chalk.green('✓') : chalk.gray('—'),
     ])

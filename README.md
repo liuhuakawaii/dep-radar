@@ -18,7 +18,7 @@
 - 许可证合规检查（支持 `(MIT OR Apache-2.0)` 复合表达式）
 - 安全漏洞审计（自动适配 npm / pnpm / yarn audit）
 - 优化建议引擎（内置常用替代方案，可扩展）
-- 多种报告格式（终端 / JSON / HTML）
+- 多种报告格式（终端 / JSON / HTML / Markdown）
 
 详细技术方案见仓库根目录的 `PLAN-v2.md`。
 
@@ -103,16 +103,30 @@ export default defineConfig({
 
 ### 配置项说明
 
-| 字段                | 类型                              | 默认值            | 说明                                         |
-| ------------------- | --------------------------------- | ----------------- | -------------------------------------------- | ------------------------------ | ---------------------------------------- |
-| `budget`            | `object`                          | -                 | 体积预算，CI 中超出则退出码 3                |
-| `budget.totalGzip`  | `number`                          | -                 | 项目总 gzip 体积上限（字节）                 |
-| `budget.perPackage` | `Record<string, number>`          | -                 | 单包体积上限，`{ "moment": 0 }` 表示禁止使用 |
-| `ignore`            | `string[]`                        | `[]`              | 忽略的包，支持 glob 模式                     |
-| `replacements`      | `Record<string, ReplacementRule>` | 内置表            | 自定义替代方案，同名覆盖内置规则             |
-| `dataSource`        | `Array<'pkg-size' \\              | 'bundlephobia' \\ | 'local'>`                                    | `['pkg-size', 'bundlephobia']` | 数据源优先级，`'local'` 启用本地 esbuild |
-| `registry`          | `string`                          | -                 | 自定义 npm registry URL                      |
-| `cacheTTL`          | `number`                          | `3600`            | 缓存 TTL（秒）                               |
+| 字段                 | 类型                              | 默认值                         | 说明                                         |
+| -------------------- | --------------------------------- | ------------------------------ | -------------------------------------------- |
+| `budget`             | `object`                          | -                              | 体积预算，CI 中超出则退出码 3                |
+| `budget.totalGzip`   | `number`                          | -                              | 项目总 gzip 体积上限（字节）                 |
+| `budget.perPackage`  | `Record<string, number>`          | -                              | 单包体积上限，`{ "moment": 0 }` 表示禁止使用 |
+| `ignore`             | `string[]`                        | `[]`                           | 忽略的包，支持 glob 模式                     |
+| `replacements`       | `Record<string, ReplacementRule>` | 内置表                         | 自定义替代方案，同名覆盖内置规则             |
+| `dataSource`         | `string[]`                        | `['pkg-size', 'bundlephobia']` | 数据源优先级，`'local'` 启用本地 esbuild     |
+| `registry`           | `string`                          | -                              | 自定义 npm registry URL                      |
+| `cacheTTL`           | `number`                          | `3600`                         | 缓存 TTL（秒）                               |
+| `concurrency`        | `number`                          | `5`                            | 并发请求数，建议范围 1-20                    |
+| `bundlephobiaRecord` | `boolean`                         | `false`                        | 是否向 Bundlephobia 写入查询记录             |
+| `healthWeights`      | `object`                          | 各维度默认权重之和 100         | 自定义健康度评分权重（见下文）               |
+
+#### healthWeights 子字段
+
+| 字段                 | 默认值 | 说明                |
+| -------------------- | ------ | ------------------- |
+| `weeklyDownloads`    | 25     | 周下载量权重        |
+| `lastPublish`        | 25     | 最近发布时间权重    |
+| `githubStars`        | 15     | GitHub Stars 权重   |
+| `maintainers`        | 10     | 维护者人数权重      |
+| `hasTypeScriptTypes` | 10     | TypeScript 类型权重 |
+| `downloadTrend`      | 15     | 下载趋势权重        |
 
 ---
 
@@ -143,53 +157,63 @@ export GITHUB_TOKEN="ghp_xxx"
 
 ## CLI 参考
 
-### `analyze`（单维度详查）
+### `analyze`（单/多维度详查）
 
-| 选项              | 说明                                               |
-| ----------------- | -------------------------------------------------- |
-| `--only <dim>`    | `size`（默认） / `health` / `license` / `security` |
-| `--format <type>` | `terminal`（默认） / `json` / `html`               |
-| `--output <path>` | 写入文件                                           |
-| `--top <n>`       | 显示前 N 个体积大户（默认 10，仅 size 维度）       |
-| `--include-dev`   | 同时分析 `devDependencies`                         |
+| 选项                 | 说明                                                              |
+| -------------------- | ----------------------------------------------------------------- |
+| `--only <dims>`      | `size`（默认）/ `health`/`license`/`security`（逗号分隔或 `all`） |
+| `--format <type>`    | `terminal`（默认） / `json` / `html` / `markdown`                 |
+| `--output <path>`    | 写入文件                                                          |
+| `--top <n>`          | 显示前 N 个体积大户（默认 10，仅 size 维度）                      |
+| `--include-dev`      | 同时分析 `devDependencies`                                        |
+| `--since <ref>`      | 增量分析：只分析相对于指定 git ref 变更的依赖                     |
+| `--workspace <name>` | 分析指定工作区子包                                                |
+| `--all-workspaces`   | 分析所有工作区子包并汇总                                          |
 
 ### `optimize`（跨维度聚合 + 生成可操作建议）
 
-| 选项              | 说明                                             |
-| ----------------- | ------------------------------------------------ |
-| `--format <type>` | `terminal`（默认） / `json` / `html`             |
-| `--output <path>` | 写入文件                                         |
-| `--include-dev`   | 同时分析 `devDependencies`                       |
-| `--skip-health`   | 跳过健康度维度（避免 GitHub API 调用，速度更快） |
-| `--skip-license`  | 跳过许可证维度                                   |
+| 选项                 | 说明                                              |
+| -------------------- | ------------------------------------------------- |
+| `--format <type>`    | `terminal`（默认） / `json` / `html` / `markdown` |
+| `--output <path>`    | 写入文件                                          |
+| `--include-dev`      | 同时分析 `devDependencies`                        |
+| `--skip-health`      | 跳过健康度维度（避免 GitHub API 调用，速度更快）  |
+| `--skip-license`     | 跳过许可证维度                                    |
+| `--skip-security`    | 跳过安全审计维度                                  |
+| `--workspace <name>` | 分析指定工作区子包                                |
+| `--all-workspaces`   | 分析所有工作区子包并汇总                          |
 
 ### `tree`（依赖树可视化）
 
-| 选项          | 说明                             |
-| ------------- | -------------------------------- |
-| `--depth <n>` | 最大深度（默认 5）               |
-| `--no-hints`  | 不显示优化提示（`[!]` 替代建议） |
+| 选项                 | 说明                             |
+| -------------------- | -------------------------------- |
+| `--depth <n>`        | 最大深度（默认 5）               |
+| `--no-hints`         | 不显示优化提示（`[!]` 替代建议） |
+| `--workspace <name>` | 查看指定工作区子包的依赖树       |
 
-### `compare`（对比两个项目的体积差异）
+### `compare`（对比两个项目的依赖差异）
 
-| 选项            | 说明                       |
-| --------------- | -------------------------- |
-| `--include-dev` | 同时比较 `devDependencies` |
+| 选项                  | 说明                                                                |
+| --------------------- | ------------------------------------------------------------------- |
+| `--include-dev`       | 同时比较 `devDependencies`                                          |
+| `--dimensions <dims>` | 比较维度，逗号分隔：`size`, `health`, `license`（默认 `size`）      |
+| `--since <ref>`       | 增量对比：与指定 git ref 的 package.json 对比（忽略第二个路径参数） |
 
-### `report`（生成 HTML 报告的快捷方式）
+### `report`（生成完整分析报告）
 
-等价于 `optimize --format html`，额外支持 `--output` 指定输出路径（默认 `dep-radar-report.html`）。
+等价于 `optimize --format <fmt>`，额外支持 `--output` 指定输出路径（默认按格式生成文件名）。支持 `--format html|json|markdown`、`--skip-health`、`--skip-license`、`--skip-security`、`--workspace`、`--all-workspaces` 选项。
 
 ### 全局选项
 
-| 选项          | 说明                       |
-| ------------- | -------------------------- |
-| `--verbose`   | 详细日志                   |
-| `--silent`    | 静默模式                   |
-| `--no-cache`  | 禁用缓存                   |
-| `--cache-dir` | 自定义缓存目录             |
-| `--registry`  | 自定义 npm registry        |
-| `--offline`   | 离线模式，跳过所有网络请求 |
+| 选项                | 说明                            |
+| ------------------- | ------------------------------- |
+| `--verbose`         | 详细日志                        |
+| `--silent`          | 静默模式                        |
+| `--no-cache`        | 禁用缓存                        |
+| `--cache-dir`       | 自定义缓存目录                  |
+| `--registry`        | 自定义 npm registry             |
+| `--concurrency <n>` | 并发请求数（默认 5，建议 1-20） |
+| `--offline`         | 离线模式，跳过所有网络请求      |
 
 ### CI 集成的退出码
 
@@ -293,11 +317,11 @@ dep-radar/
 │   ├── commands/              # CLI 子命令编排
 │   ├── analyzers/             # 业务分析器（纯逻辑）
 │   ├── data/                  # 数据获取层（HTTP、API、缓存）
-│   ├── report/                # 报告生成器（terminal/json/html）
+│   ├── report/                # 报告生成器（terminal/json/html/markdown）
 │   ├── config/                # 配置加载、替代方案表、许可证分类
 │   ├── errors/                # 自定义错误类
 │   ├── types/                 # 类型定义
-│   └── utils/                 # 工具函数
+│   └── utils/                 # 工具函数（含 workspace.ts、gitDiff.ts）
 ├── tests/
 │   ├── integration/           # 集成测试
 │   ├── fixtures/              # 测试固件

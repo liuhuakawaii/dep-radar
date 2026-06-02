@@ -11,6 +11,7 @@
 
 import { NetworkError, PackageNotFoundError } from '../errors/index.js'
 import type { GithubRepoResponse } from '../types/api.js'
+import type { DataCache } from './cache.js'
 import { fetchJson } from './http.js'
 
 /**
@@ -61,17 +62,24 @@ export function parseGitHubUrl(
 export async function getRepoInfo(
   owner: string,
   repo: string,
+  cache?: DataCache,
 ): Promise<GithubRepoResponse> {
   const token = process.env.GITHUB_TOKEN
   const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`
-  try {
-    return await fetchJson<GithubRepoResponse>(url, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
-  } catch (err) {
-    if (err instanceof NetworkError && err.status === 404) {
-      throw new PackageNotFoundError(`${owner}/${repo}`, { cause: err })
+
+  const fetchFn = async (): Promise<GithubRepoResponse> => {
+    try {
+      return await fetchJson<GithubRepoResponse>(url, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+    } catch (err) {
+      if (err instanceof NetworkError && err.status === 404) {
+        throw new PackageNotFoundError(`${owner}/${repo}`, { cause: err })
+      }
+      throw err
     }
-    throw err
   }
+
+  if (cache) return cache.withCache(`github:${owner}/${repo}`, fetchFn)
+  return fetchFn()
 }

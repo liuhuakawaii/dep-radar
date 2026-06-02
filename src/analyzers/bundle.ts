@@ -45,6 +45,14 @@ export interface AnalyzeBundleOptions {
    * 不支持完整 glob（避免引入 micromatch 依赖）。
    */
   ignore?: string[]
+  /** 每个包完成时的进度回调 */
+  onProgress?: (info: { current: number; total: number; name: string }) => void
+  /** 每个包完成时的结果回调（verbose 模式逐包输出用） */
+  onResult?: (info: {
+    current: number
+    total: number
+    result: BundleInfo
+  }) => void
 }
 
 export interface BundleAnalysisResult {
@@ -74,6 +82,8 @@ export async function analyzeBundleSize(
     topN = 10,
     includeDev = false,
     ignore = [],
+    onProgress,
+    onResult,
   } = options
 
   const limit = pLimit(Math.max(1, concurrency))
@@ -103,14 +113,18 @@ export async function analyzeBundleSize(
     toFetch.push({ name, version: spec.version })
   }
 
+  let completed = 0
+  const total = toFetch.length
+
   const fetched = await Promise.all(
     toFetch.map(({ name, version }) =>
       limit(async (): Promise<BundleInfo> => {
+        let result: BundleInfo
         try {
-          return await fetchSize(name, version)
+          result = await fetchSize(name, version)
         } catch (err) {
           // 单包失败不阻断整体；记录错误信息让用户能定位
-          return {
+          result = {
             name,
             version: version ?? '',
             size: 0,
@@ -122,6 +136,10 @@ export async function analyzeBundleSize(
             error: err instanceof Error ? err.message : String(err),
           }
         }
+        completed++
+        onProgress?.({ current: completed, total, name })
+        onResult?.({ current: completed, total, result })
+        return result
       }),
     ),
   )

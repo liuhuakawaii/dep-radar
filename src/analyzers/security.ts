@@ -151,15 +151,42 @@ export function parseAuditOutput(
   stdout: string,
   pm: PackageManager,
 ): ParsedAuditEntry[] {
+  if (pm === 'yarn') return parseYarnAuditOutput(stdout)
   const data = JSON.parse(stdout) as unknown
   switch (pm) {
     case 'npm':
       return parseNpmAudit(data)
     case 'pnpm':
       return parsePnpmAudit(data)
-    case 'yarn':
-      return parseYarnAudit(data)
   }
+}
+
+/**
+ * Yarn audit 输出可能是：
+ * - Berry: 单个 JSON 对象
+ * - Classic: NDJSON（多行，每行一个 JSON）
+ *
+ * 先尝试整体 JSON.parse，失败则按 NDJSON 处理。
+ */
+function parseYarnAuditOutput(stdout: string): ParsedAuditEntry[] {
+  // 尝试 Berry 格式（单个 JSON）
+  try {
+    const data = JSON.parse(stdout) as unknown
+    return parseYarnAudit(data)
+  } catch {
+    // 不是合法的单个 JSON，按 Classic NDJSON 处理
+  }
+
+  const lines: unknown[] = []
+  for (const line of stdout.split('\n')) {
+    if (!line.trim()) continue
+    try {
+      lines.push(JSON.parse(line))
+    } catch {
+      // 跳过非 JSON 行
+    }
+  }
+  return parseYarnAudit(lines)
 }
 
 // ----- npm -----
@@ -286,26 +313,79 @@ interface YarnAuditData {
 }
 
 /**
- * yarn npm audit --json 输出格式（Yarn Berry）：
- * 与 npm 类似，{ "vulnerabilities": { "pkg": { "severity": "...", ... } } }
+ * yarn audit 输出格式：
  *
- * 注意：Yarn Classic (1.x) 输出格式不同，此处仅适配 Berry。
- * Classic 用户会收到解析失败提示。
+ * Berry（yarn npm audit --json）：单个 JSON，与 npm 类似
+ *   { "vulnerabilities": { "pkg": { "severity": "...", ... } } }
+ *
+ * Classic（yarn audit --json）：NDJSON，每行一个 JSON 对象
+ *   - type="auditAdvisory": 单条漏洞，含 data.advisory.module_name / severity / title / url
+ *   - type="auditSummary": 汇总（忽略）
  */
 function parseYarnAudit(data: unknown): ParsedAuditEntry[] {
+  // Berry 格式：单个 JSON 对象
   const d = data as YarnAuditData
-  if (!d.vulnerabilities || typeof d.vulnerabilities !== 'object') return []
+  if (d && typeof d === 'object' && 'vulnerabilities' in d) {
+    if (!d.vulnerabilities || typeof d.vulnerabilities !== 'object') return []
+    return Object.entries(d.vulnerabilities).map(([name, vuln]) => ({
+      name,
+      vulnerabilities: [
+        {
+          severity: normalizeSeverity(vuln.severity),
+          title: vuln.title ?? `${name} 安全漏洞`,
+          url: vuln.url ?? '',
+          fixAvailable: vuln.fixAvailable ?? false,
+        },
+      ],
+    }))
+  }
 
-  return Object.entries(d.vulnerabilities).map(([name, vuln]) => ({
+  // Classic NDJSON 格式：data 是已解析的行数组
+  if (Array.isArray(data)) {
+    return parseYarnClassicAuditNdjson(data)
+  }
+
+  return []
+}
+
+interface YarnClassicAuditLine {
+  type: string
+  data?: {
+    advisory?: {
+      module_name?: string
+      severity?: string
+      title?: string
+      url?: string
+      patched_versions?: string
+    }
+  }
+}
+
+/**
+ * 解析 Yarn Classic NDJSON audit 输出
+ *
+ * 输入为已按行分割并 JSON.parse 后的对象数组。
+ * 只取 type="auditAdvisory" 的行。
+ */
+function parseYarnClassicAuditNdjson(lines: unknown[]): ParsedAuditEntry[] {
+  const byName = new Map<string, Vulnerability[]>()
+  for (const line of lines) {
+    const obj = line as YarnClassicAuditLine
+    if (obj.type !== 'auditAdvisory' || !obj.data?.advisory) continue
+    const adv = obj.data.advisory
+    const name = adv.module_name ?? 'unknown'
+    const list = byName.get(name) ?? []
+    list.push({
+      severity: normalizeSeverity(adv.severity ?? 'low'),
+      title: adv.title ?? `${name} 安全漏洞`,
+      url: adv.url ?? '',
+      fixAvailable: Boolean(adv.patched_versions),
+    })
+    byName.set(name, list)
+  }
+  return Array.from(byName.entries()).map(([name, vulnerabilities]) => ({
     name,
-    vulnerabilities: [
-      {
-        severity: normalizeSeverity(vuln.severity),
-        title: vuln.title ?? `${name} 安全漏洞`,
-        url: vuln.url ?? '',
-        fixAvailable: vuln.fixAvailable ?? false,
-      },
-    ],
+    vulnerabilities,
   }))
 }
 

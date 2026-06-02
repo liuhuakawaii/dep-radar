@@ -1,10 +1,12 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 
-import type { BundleInfo } from '../types/analysis.js'
+import type { BundleInfo, HealthInfo, LicenseInfo } from '../types/analysis.js'
 
 import {
   diffBundles,
-  renderCompareTable,
+  diffHealth,
+  diffLicenses,
+  renderSizeSection,
   type CompareResult,
 } from './compare.js'
 
@@ -174,7 +176,7 @@ describe('diffBundles', () => {
 // renderCompareTable
 // =====================================================================
 
-describe('renderCompareTable', () => {
+describe('renderSizeSection', () => {
   it('无差异时应显示"无差异"', () => {
     const r: CompareResult = {
       added: [],
@@ -183,8 +185,8 @@ describe('renderCompareTable', () => {
       totalSizeDelta: 0,
       totalGzipDelta: 0,
     }
-    const out = renderCompareTable(r, 'old-app', 'new-app')
-    expect(out).toContain('old-app → new-app')
+    const out = renderSizeSection(r)
+    expect(out).toContain('体积对比')
     expect(out).toContain('无差异')
   })
 
@@ -196,7 +198,7 @@ describe('renderCompareTable', () => {
       totalSizeDelta: 72000,
       totalGzipDelta: 25000,
     }
-    const out = renderCompareTable(r, 'a', 'b')
+    const out = renderSizeSection(r)
     expect(out).toContain('新增')
     expect(out).toContain('lodash')
     expect(out).toContain('汇总')
@@ -213,7 +215,7 @@ describe('renderCompareTable', () => {
       totalSizeDelta: -300000,
       totalGzipDelta: -70000,
     }
-    const out = renderCompareTable(r, 'a', 'b')
+    const out = renderSizeSection(r)
     expect(out).toContain('移除')
     expect(out).toContain('moment')
     expect(out).toContain('-1 移除')
@@ -237,7 +239,7 @@ describe('renderCompareTable', () => {
       totalSizeDelta: 600,
       totalGzipDelta: 200,
     }
-    const out = renderCompareTable(r, 'a', 'b')
+    const out = renderSizeSection(r)
     expect(out).toContain('变更')
     expect(out).toContain('react')
     expect(out).toContain('18.2.0 → 18.3.1')
@@ -262,8 +264,7 @@ describe('renderCompareTable', () => {
       totalSizeDelta: 1000,
       totalGzipDelta: 300,
     }
-    const out = renderCompareTable(r, 'a', 'b')
-    // 版本相同时表格中不应有箭头（标题中的 "a → b" 不算）
+    const out = renderSizeSection(r)
     const tableLines = out.split('\n').filter(l => l.includes('react'))
     expect(tableLines[0]).toContain('18.3.1')
     expect(tableLines[0]).not.toContain('→')
@@ -277,7 +278,7 @@ describe('renderCompareTable', () => {
       totalSizeDelta: 3000,
       totalGzipDelta: 1000,
     }
-    const out = renderCompareTable(r, 'a', 'b')
+    const out = renderSizeSection(r)
     expect(out).toContain('+1000 B')
   })
 
@@ -289,7 +290,133 @@ describe('renderCompareTable', () => {
       totalSizeDelta: -3000,
       totalGzipDelta: -1000,
     }
-    const out = renderCompareTable(r, 'a', 'b')
+    const out = renderSizeSection(r)
     expect(out).toContain('-1000 B')
+  })
+})
+
+// =====================================================================
+// diffHealth
+// =====================================================================
+
+function makeHealth(
+  name: string,
+  score: number,
+  deprecated = false,
+): HealthInfo {
+  return {
+    name,
+    weeklyDownloads: 0,
+    downloadTrend: 'stable',
+    lastPublish: '',
+    maintainers: 0,
+    openIssues: 0,
+    deprecated,
+    hasTypeScriptTypes: false,
+    healthScore: score,
+  }
+}
+
+describe('diffHealth', () => {
+  it('两个空数组应返回空结果', () => {
+    const r = diffHealth([], [])
+    expect(r.entries).toHaveLength(0)
+    expect(r.onlyInA).toHaveLength(0)
+    expect(r.onlyInB).toHaveLength(0)
+  })
+
+  it('共同包应计算分数差异', () => {
+    const a = [makeHealth('react', 90)]
+    const b = [makeHealth('react', 75)]
+    const r = diffHealth(a, b)
+    expect(r.entries).toHaveLength(1)
+    expect(r.entries[0]).toMatchObject({
+      name: 'react',
+      fromScore: 90,
+      toScore: 75,
+      scoreDelta: -15,
+    })
+  })
+
+  it('仅在 A 中的包应归入 onlyInA', () => {
+    const a = [makeHealth('react', 90), makeHealth('moment', 30)]
+    const b = [makeHealth('react', 90)]
+    const r = diffHealth(a, b)
+    expect(r.onlyInA).toContain('moment')
+  })
+
+  it('仅在 B 中的包应归入 onlyInB', () => {
+    const a = [makeHealth('react', 90)]
+    const b = [makeHealth('react', 90), makeHealth('dayjs', 95)]
+    const r = diffHealth(a, b)
+    expect(r.onlyInB).toContain('dayjs')
+  })
+
+  it('应按 |scoreDelta| 降序排列', () => {
+    const a = [makeHealth('a', 80), makeHealth('b', 50), makeHealth('c', 90)]
+    const b = [makeHealth('a', 85), makeHealth('b', 20), makeHealth('c', 88)]
+    const r = diffHealth(a, b)
+    // b: |delta|=30, a: |delta|=5, c: |delta|=2
+    expect(r.entries.map(e => e.name)).toEqual(['b', 'a', 'c'])
+  })
+})
+
+// =====================================================================
+// diffLicenses
+// =====================================================================
+
+function makeLicense(
+  name: string,
+  license: string,
+  risk: 'low' | 'medium' | 'high' = 'low',
+): LicenseInfo {
+  return {
+    name,
+    license,
+    risk,
+    licenseType: 'permissive',
+  }
+}
+
+describe('diffLicenses', () => {
+  it('两个空数组应返回空结果', () => {
+    const r = diffLicenses([], [])
+    expect(r.entries).toHaveLength(0)
+  })
+
+  it('相同许可证应标记 riskChanged=false', () => {
+    const a = [makeLicense('react', 'MIT')]
+    const b = [makeLicense('react', 'MIT')]
+    const r = diffLicenses(a, b)
+    expect(r.entries).toHaveLength(1)
+    expect(r.entries[0]!.riskChanged).toBe(false)
+  })
+
+  it('许可证风险变化应标记 riskChanged=true', () => {
+    const a = [makeLicense('pkg', 'MIT', 'low')]
+    const b = [makeLicense('pkg', 'GPL-3.0', 'high')]
+    const r = diffLicenses(a, b)
+    expect(r.entries[0]).toMatchObject({
+      fromLicense: 'MIT',
+      toLicense: 'GPL-3.0',
+      fromRisk: 'low',
+      toRisk: 'high',
+      riskChanged: true,
+    })
+  })
+
+  it('风险变化的条目应排在前面', () => {
+    const a = [
+      makeLicense('a', 'MIT', 'low'),
+      makeLicense('b', 'MIT', 'low'),
+      makeLicense('c', 'MIT', 'low'),
+    ]
+    const b = [
+      makeLicense('a', 'MIT', 'low'),
+      makeLicense('b', 'GPL-3.0', 'high'),
+      makeLicense('c', 'MIT', 'low'),
+    ]
+    const r = diffLicenses(a, b)
+    expect(r.entries[0]!.name).toBe('b') // riskChanged=true 排第一
   })
 })

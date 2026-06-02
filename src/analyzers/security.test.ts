@@ -191,6 +191,96 @@ describe('parseAuditOutput', () => {
     it('空 vulnerabilities 应返回空数组', () => {
       expect(parseAuditOutput(makeYarnAuditData(), 'yarn')).toEqual([])
     })
+
+    it('应解析 Yarn Classic NDJSON audit 输出', () => {
+      const stdout = [
+        JSON.stringify({
+          type: 'auditAdvisory',
+          data: {
+            resolution: {
+              id: 1,
+              path: 'express>qs',
+              dev: false,
+              optional: false,
+              bundled: false,
+            },
+            advisory: {
+              module_name: 'qs',
+              severity: 'high',
+              title: 'Prototype Pollution',
+              url: 'https://npmjs.com/advisories/1234',
+              patched_versions: '>=6.5.3',
+            },
+          },
+        }),
+        JSON.stringify({
+          type: 'auditAdvisory',
+          data: {
+            resolution: {
+              id: 2,
+              path: 'express>qs',
+              dev: false,
+              optional: false,
+              bundled: false,
+            },
+            advisory: {
+              module_name: 'qs',
+              severity: 'moderate',
+              title: 'ReDoS',
+              url: 'https://npmjs.com/advisories/5678',
+              patched_versions: '>=6.5.4',
+            },
+          },
+        }),
+        JSON.stringify({
+          type: 'auditAdvisory',
+          data: {
+            resolution: {
+              id: 3,
+              path: 'express>lodash',
+              dev: false,
+              optional: false,
+              bundled: false,
+            },
+            advisory: {
+              module_name: 'lodash',
+              severity: 'critical',
+              title: 'Prototype Pollution',
+              url: 'https://npmjs.com/advisories/9999',
+            },
+          },
+        }),
+        JSON.stringify({
+          type: 'auditSummary',
+          data: {
+            vulnerabilities: {
+              info: 0,
+              low: 0,
+              moderate: 1,
+              high: 1,
+              critical: 1,
+            },
+            dependencies: 100,
+            devDependencies: 50,
+            optionalDependencies: 10,
+            totalDependencies: 160,
+          },
+        }),
+      ].join('\n')
+
+      const result = parseAuditOutput(stdout, 'yarn')
+      expect(result).toHaveLength(2)
+
+      const qs = result.find(e => e.name === 'qs')!
+      expect(qs.vulnerabilities).toHaveLength(2)
+      expect(qs.vulnerabilities[0]!.severity).toBe('high')
+      expect(qs.vulnerabilities[1]!.severity).toBe('moderate')
+
+      const lodash = result.find(e => e.name === 'lodash')!
+      expect(lodash.vulnerabilities).toHaveLength(1)
+      expect(lodash.vulnerabilities[0]!.severity).toBe('critical')
+      expect(lodash.vulnerabilities[0]!.fixAvailable).toBe(false) // 无 patched_versions
+    })
   })
 
   it('未知严重度应降级为 low', () => {

@@ -81,6 +81,71 @@ describe('parseDepTree (pnpm)', () => {
   })
 })
 
+describe('parseDepTree (yarn classic)', () => {
+  it('应解析 yarn list --json 的 NDJSON tree 行', () => {
+    const stdout = [
+      '{"type":"step","data":{"message":"Resolving packages","current":1,"total":4}}',
+      JSON.stringify({
+        type: 'tree',
+        data: {
+          type: 'list',
+          trees: [
+            {
+              name: 'express@4.18.2',
+              color: 'bold',
+              children: [
+                {
+                  name: 'accepts@1.3.8',
+                  color: null,
+                  children: [
+                    { name: 'mime-types@2.1.35', color: 'dim', shadow: true },
+                    { name: 'negotiator@0.6.3', color: null },
+                  ],
+                },
+                { name: 'body-parser@1.20.1', color: null, children: [] },
+              ],
+            },
+            { name: 'lodash@4.17.21', color: 'bold', children: [] },
+          ],
+        },
+      }),
+      '{"type":"finished","data":0.523}',
+    ].join('\n')
+
+    const tree = parseDepTree(stdout, 'yarn')
+    expect(tree.name).toBe('(root)')
+    expect(tree.children).toHaveLength(2)
+
+    const express = tree.children.find(c => c.name === 'express')!
+    expect(express.version).toBe('4.18.2')
+    expect(express.children).toHaveLength(2)
+
+    const accepts = express.children.find(c => c.name === 'accepts')!
+    expect(accepts.version).toBe('1.3.8')
+    // shadow 节点应被跳过
+    expect(accepts.children).toHaveLength(1)
+    expect(accepts.children[0]!.name).toBe('negotiator')
+  })
+
+  it('无 tree 行时应抛出错误', () => {
+    const stdout = '{"type":"step","data":{"message":"Resolving"}}'
+    expect(() => parseDepTree(stdout, 'yarn')).toThrow(/未找到 tree 数据/)
+  })
+
+  it('name 无 @ 时 version 应回退为 ?', () => {
+    const stdout = JSON.stringify({
+      type: 'tree',
+      data: {
+        type: 'list',
+        trees: [{ name: 'noatsign', color: 'bold', children: [] }],
+      },
+    })
+    const tree = parseDepTree(stdout, 'yarn')
+    expect(tree.children[0]!.name).toBe('noatsign')
+    expect(tree.children[0]!.version).toBe('?')
+  })
+})
+
 describe('renderTree', () => {
   const sample: TreeNode = {
     name: 'my-app',

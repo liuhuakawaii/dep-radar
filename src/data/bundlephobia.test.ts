@@ -41,7 +41,7 @@ describe('getPackageSize (bundlephobia)', () => {
     expect(got.brotli).toBeUndefined()
   })
 
-  it('URL 应包含 record=true（贡献到 Bundlephobia DB）', async () => {
+  it('默认 URL 不应包含 record=true', async () => {
     mockedFetchJson.mockResolvedValueOnce({
       name: 'react',
       version: '18.3.1',
@@ -54,8 +54,24 @@ describe('getPackageSize (bundlephobia)', () => {
 
     await getPackageSize('react', '18.3.1')
     const [url] = mockedFetchJson.mock.calls[0]!
-    expect(url).toContain('record=true')
+    expect(url).not.toContain('record=true')
     expect(url).toContain('package=')
+  })
+
+  it('传入 record=true 时 URL 应包含 record=true', async () => {
+    mockedFetchJson.mockResolvedValueOnce({
+      name: 'react',
+      version: '18.3.1',
+      size: 1,
+      gzip: 1,
+      dependencyCount: 0,
+      hasJSModule: true,
+      hasJSNext: false,
+    })
+
+    await getPackageSize('react', '18.3.1', undefined, true)
+    const [url] = mockedFetchJson.mock.calls[0]!
+    expect(url).toContain('record=true')
   })
 
   it('HTTP 404 应转抛 PackageNotFoundError', async () => {

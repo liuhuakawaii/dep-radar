@@ -93,4 +93,33 @@ export interface DepRadarConfig {
   registry?: string
   /** 缓存 TTL（秒）；默认 3600 */
   cacheTTL?: number
+  /** 并发请求数；默认 5，建议范围 1-20 */
+  concurrency?: number
+  /**
+   * 是否向 Bundlephobia 写入查询记录
+   *
+   * 默认 false（不替用户向第三方服务写入数据）。
+   * 设为 true 可帮助 Bundlephobia 建立更完整的包体积数据库。
+   */
+  bundlephobiaRecord?: boolean
+  /**
+   * 健康度评分权重
+   *
+   * 各维度权重之和建议为 100；不足 100 时满分不到 100，超过 100 时封顶 100。
+   * 未指定的字段使用默认值。
+   */
+  healthWeights?: {
+    /** 周下载量权重；默认 25 */
+    weeklyDownloads?: number
+    /** 最近发布时间权重；默认 25 */
+    lastPublish?: number
+    /** GitHub stars 权重；默认 15 */
+    githubStars?: number
+    /** 维护者数量权重；默认 10 */
+    maintainers?: number
+    /** TypeScript 类型支持权重；默认 10 */
+    hasTypeScriptTypes?: number
+    /** 下载趋势权重；默认 15 */
+    downloadTrend?: number
+  }
 }

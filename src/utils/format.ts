@@ -104,3 +104,16 @@ export function formatRelativeTime(
   }
   return isoString
 }
+
+/**
+ * 去除字符串中的 ANSI 转义码
+ *
+ * 用于 terminal 格式写文件时清理颜色/样式控制字符。
+ *
+ * @example
+ * stripAnsi("\x1B[31mred\x1B[0m")  // "red"
+ */
+export function stripAnsi(str: string): string {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1B\[[0-9;]*m/g, '')
+}

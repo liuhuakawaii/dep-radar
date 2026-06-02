@@ -20,7 +20,12 @@ import type {
   OptimizationSuggestion,
   SecurityInfo,
 } from '../types/analysis.js'
-import { formatBytes, formatDate, formatNumber } from '../utils/format.js'
+import {
+  formatBytes,
+  formatDate,
+  formatNumber,
+  formatRelativeTime,
+} from '../utils/format.js'
 
 // =====================================================================
 // 主入口
@@ -359,7 +364,7 @@ function renderHealthSection(health: HealthInfo[]): string {
         <td>${escapeHtml(h.name)}</td>
         <td><span class="badge ${scoreColor}">${h.healthScore}</span></td>
         <td>${escapeHtml(formatNumber(h.weeklyDownloads))}</td>
-        <td>${escapeHtml(formatDate(h.lastPublish))}</td>
+        <td>${escapeHtml(formatRelativeTime(h.lastPublish))}</td>
         <td>${h.deprecated ? '<span class="badge red">已废弃</span>' : '<span class="muted">否</span>'}</td>
         <td>${h.hasTypeScriptTypes ? '<span class="badge green">✓</span>' : '<span class="muted">—</span>'}</td>
       </tr>`

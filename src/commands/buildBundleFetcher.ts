@@ -10,6 +10,7 @@
 
 import type { BundleFetcher } from '../analyzers/bundle.js'
 import { getPackageSize as fromBundlephobia } from '../data/bundlephobia.js'
+import type { DataCache } from '../data/cache.js'
 import { getPackageSize as fromPkgSize } from '../data/pkg-size.js'
 import { PackageNotFoundError } from '../errors/index.js'
 import { logger } from '../utils/logger.js'
@@ -17,16 +18,26 @@ import { logger } from '../utils/logger.js'
 /** 支持的数据源标识 */
 export type DataSourceName = 'pkg-size' | 'bundlephobia' | 'local'
 
-/** 各数据源的实现 map */
-const SOURCES: Record<Exclude<DataSourceName, 'local'>, BundleFetcher> = {
-  'pkg-size': fromPkgSize,
-  bundlephobia: fromBundlephobia,
-  // 'local': 在 Phase 3 实现（src/data/local-bundle.ts）
+/** 各数据源的实现 map（带缓存包装） */
+function buildSources(
+  cache?: DataCache,
+  bundlephobiaRecord = false,
+): Record<Exclude<DataSourceName, 'local'>, BundleFetcher> {
+  return {
+    'pkg-size': (name, version) => fromPkgSize(name, version, cache),
+    bundlephobia: (name, version) =>
+      fromBundlephobia(name, version, cache, bundlephobiaRecord),
+    // 'local': 在 Phase 3 实现（src/data/local-bundle.ts）
+  }
 }
 
 export interface BuildBundleFetcherOptions {
   /** 数据源优先级；默认 ['pkg-size', 'bundlephobia'] */
   dataSource?: DataSourceName[]
+  /** 缓存实例；不传则不缓存 */
+  cache?: DataCache
+  /** 是否向 Bundlephobia 写入查询记录；默认 false */
+  bundlephobiaRecord?: boolean
 }
 
 /**
@@ -48,6 +59,7 @@ export function buildBundleFetcher(
   )
 
   const fetchers: Array<{ name: string; fn: BundleFetcher }> = []
+  const sourceMap = buildSources(options.cache, options.bundlephobiaRecord)
   for (const s of sources) {
     if (s === 'local') {
       logger.warn(
@@ -55,7 +67,7 @@ export function buildBundleFetcher(
       )
       continue
     }
-    fetchers.push({ name: s, fn: SOURCES[s] })
+    fetchers.push({ name: s, fn: sourceMap[s] })
   }
 
   if (fetchers.length === 0) {

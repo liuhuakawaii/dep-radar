@@ -12,6 +12,7 @@
 
 import { NetworkError, PackageNotFoundError } from '../errors/index.js'
 import type { BundleInfo } from '../types/analysis.js'
+import type { DataCache } from './cache.js'
 import { fetchJson } from './http.js'
 
 const BASE_URL = 'https://bundlephobia.com/api'
@@ -42,29 +43,36 @@ interface BundlephobiaResponse {
 export async function getPackageSize(
   name: string,
   version?: string,
+  cache?: DataCache,
+  record = false,
 ): Promise<BundleInfo> {
   const spec = version ? `${name}@${version}` : name
-  const url = `${BASE_URL}/size?package=${encodeURIComponent(spec)}&record=true`
+  const url = `${BASE_URL}/size?package=${encodeURIComponent(spec)}${record ? '&record=true' : ''}`
 
-  let data: BundlephobiaResponse
-  try {
-    data = await fetchJson<BundlephobiaResponse>(url, { timeout: 15000 })
-  } catch (err) {
-    if (err instanceof NetworkError && err.status === 404) {
-      throw new PackageNotFoundError(spec, { cause: err })
+  const fetchFn = async (): Promise<BundleInfo> => {
+    let data: BundlephobiaResponse
+    try {
+      data = await fetchJson<BundlephobiaResponse>(url, { timeout: 15000 })
+    } catch (err) {
+      if (err instanceof NetworkError && err.status === 404) {
+        throw new PackageNotFoundError(spec, { cause: err })
+      }
+      throw err
     }
-    throw err
+
+    return {
+      name: data.name,
+      version: data.version,
+      size: data.size,
+      gzip: data.gzip,
+      // brotli 故意不设：Bundlephobia 没有这个数据
+      dependencyCount: data.dependencyCount,
+      hasJSModule: data.hasJSModule,
+      hasJSNext: data.hasJSNext,
+      source: 'bundlephobia',
+    }
   }
 
-  return {
-    name: data.name,
-    version: data.version,
-    size: data.size,
-    gzip: data.gzip,
-    // brotli 故意不设：Bundlephobia 没有这个数据
-    dependencyCount: data.dependencyCount,
-    hasJSModule: data.hasJSModule,
-    hasJSNext: data.hasJSNext,
-    source: 'bundlephobia',
-  }
+  if (cache) return cache.withCache(`bundlephobia:${spec}`, fetchFn)
+  return fetchFn()
 }

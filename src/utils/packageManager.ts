@@ -5,10 +5,14 @@
  * 避免散落在各处的 if-else 判断。
  */
 
+import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { promisify } from 'node:util'
 
 import type { PackageManager } from '../types/package.js'
+
+const execFileP = promisify(execFile)
 
 /**
  * 根据项目目录下的 lock 文件推断包管理器
@@ -60,4 +64,40 @@ export const PM_COMMANDS: Record<
     list: { cmd: 'yarn', args: ['info', '--json', '--recursive'] },
     audit: { cmd: 'yarn', args: ['npm', 'audit', '--json'] },
   },
+}
+
+/**
+ * Yarn Classic (1.x) 专用命令规格
+ *
+ * Classic 的 list / audit 子命令与 Berry 不同：
+ * - list: `yarn list --json` 输出 NDJSON（非单个 JSON）
+ * - audit: `yarn audit --json` 输出 NDJSON（非单个 JSON）
+ */
+export const YARN_CLASSIC_COMMANDS: {
+  list: CommandSpec
+  audit: CommandSpec
+} = {
+  list: { cmd: 'yarn', args: ['list', '--json'] },
+  audit: { cmd: 'yarn', args: ['audit', '--json'] },
+}
+
+export type YarnVersion = 'classic' | 'berry'
+
+/**
+ * 检测 Yarn 版本（Classic 1.x vs Berry 2+）
+ *
+ * 通过 `yarn --version` 判断：主版本号 < 2 为 Classic，否则为 Berry。
+ * 检测失败时默认返回 'berry'（更通用的格式）。
+ */
+export async function detectYarnVersion(cwd: string): Promise<YarnVersion> {
+  try {
+    const { stdout } = await execFileP('yarn', ['--version'], {
+      cwd,
+      timeout: 10_000,
+    })
+    const major = parseInt(stdout.trim().split('.')[0] ?? '', 10)
+    return Number.isNaN(major) || major >= 2 ? 'berry' : 'classic'
+  } catch {
+    return 'berry'
+  }
 }

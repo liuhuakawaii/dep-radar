@@ -13,12 +13,23 @@ import {
   normalizeLicenseField,
   type LicenseFetcher,
 } from '../analyzers/license.js'
+import type { DataCache } from '../data/cache.js'
 import { getPackageInfo } from '../data/npm.js'
 
-export function buildLicenseFetcher(): LicenseFetcher {
+export interface BuildLicenseFetcherOptions {
+  /** 缓存实例；不传则不缓存 */
+  cache?: DataCache
+  /** 自定义 npm registry URL */
+  registry?: string
+}
+
+export function buildLicenseFetcher(
+  options: BuildLicenseFetcherOptions = {},
+): LicenseFetcher {
+  const { cache, registry } = options
   return {
     getLicense: async name => {
-      const manifest = await getPackageInfo(name)
+      const manifest = await getPackageInfo(name, cache, registry)
       return normalizeLicenseField(manifest.license)
     },
   }

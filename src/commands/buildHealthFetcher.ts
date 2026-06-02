@@ -11,6 +11,7 @@
  */
 
 import type { HealthFetcher } from '../analyzers/health.js'
+import type { DataCache } from '../data/cache.js'
 import { getRepoInfo } from '../data/github.js'
 import {
   getDownloadCount,
@@ -21,20 +22,28 @@ import { logger } from '../utils/logger.js'
 
 let githubTokenWarned = false
 
+export interface BuildHealthFetcherOptions {
+  /** 缓存实例；不传则不缓存 */
+  cache?: DataCache
+  /** 自定义 npm registry URL */
+  registry?: string
+}
+
 /**
  * 构造默认的 HealthFetcher 实现
- *
- * 当前阶段没有可注入参数，但保留 options 形参便于后续加入 timeout/registry 等。
  */
-export function buildHealthFetcher(): HealthFetcher {
+export function buildHealthFetcher(
+  options: BuildHealthFetcherOptions = {},
+): HealthFetcher {
+  const { cache, registry } = options
   return {
-    getFullDoc: name => getFullPackageInfo(name),
-    getWeeklyDownloads: name => getDownloadCount(name, 'last-week'),
-    getTrend: name => getDownloadTrend(name),
+    getFullDoc: name => getFullPackageInfo(name, cache, registry),
+    getWeeklyDownloads: name => getDownloadCount(name, 'last-week', cache),
+    getTrend: name => getDownloadTrend(name, cache),
     getGitHubRepo: async (owner, repo) => {
       maybeWarnGitHubToken()
       try {
-        return await getRepoInfo(owner, repo)
+        return await getRepoInfo(owner, repo, cache)
       } catch (err) {
         logger.debug(
           `GitHub 仓库 ${owner}/${repo} 拉取失败：${err instanceof Error ? err.message : String(err)}`,

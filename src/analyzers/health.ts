@@ -26,6 +26,7 @@
 
 import pLimit from 'p-limit'
 
+import { parseGitHubUrl } from '../data/github.js'
 import type { GithubRepoResponse, NpmFullDocResponse } from '../types/api.js'
 import type { HealthInfo } from '../types/analysis.js'
 import type { PackageJson } from '../types/package.js'
@@ -51,6 +52,19 @@ export interface AnalyzeHealthOptions {
   includeDev?: boolean
   /** glob 模式数组，匹配的包跳过；与 bundle analyzer 共用语义 */
   ignore?: string[]
+  /** 健康度评分权重；未指定的字段使用默认值 */
+  healthWeights?: HealthWeights
+  /** 每个包完成时的进度回调 */
+  onProgress?: (info: { current: number; total: number; name: string }) => void
+}
+
+export interface HealthWeights {
+  weeklyDownloads?: number
+  lastPublish?: number
+  githubStars?: number
+  maintainers?: number
+  hasTypeScriptTypes?: number
+  downloadTrend?: number
 }
 
 export interface HealthAnalysisResult {
@@ -68,7 +82,13 @@ export async function analyzeHealth(
   fetcher: HealthFetcher,
   options: AnalyzeHealthOptions = {},
 ): Promise<HealthAnalysisResult> {
-  const { concurrency = 5, includeDev = false, ignore } = options
+  const {
+    concurrency = 5,
+    includeDev = false,
+    ignore,
+    healthWeights,
+    onProgress,
+  } = options
 
   const deps: Record<string, string> = {
     ...pkg.dependencies,
@@ -85,12 +105,19 @@ export async function analyzeHealth(
   }
 
   const limit = pLimit(concurrency)
+  let completed = 0
+  const total = targets.length
   const results = await Promise.all(
     targets.map(name =>
       limit(async () => {
         try {
-          return await analyzeOne(name, fetcher)
+          const result = await analyzeOne(name, fetcher, healthWeights)
+          completed++
+          onProgress?.({ current: completed, total, name })
+          return result
         } catch (err) {
+          completed++
+          onProgress?.({ current: completed, total, name })
           skipped.push({
             name,
             reason: err instanceof Error ? err.message : String(err),
@@ -114,6 +141,7 @@ export async function analyzeHealth(
 async function analyzeOne(
   name: string,
   fetcher: HealthFetcher,
+  weights?: HealthWeights,
 ): Promise<HealthInfo> {
   // 1) 并行拉 npm doc + weekly downloads + trend
   const [doc, weeklyDownloads, downloadTrend] = await Promise.all([
@@ -149,7 +177,7 @@ async function analyzeOne(
   let githubLastPush: string | undefined
   let openIssues = 0
 
-  const gh = repoUrl ? parseGitHubOwnerRepo(repoUrl) : null
+  const gh = repoUrl ? parseGitHubUrl(repoUrl) : null
   if (gh) {
     const repoInfo = await fetcher.getGitHubRepo(gh.owner, gh.repo)
     if (repoInfo) {
@@ -174,7 +202,7 @@ async function analyzeOne(
     hasTypeScriptTypes,
     healthScore: 0, // 占位，下一行覆盖
   }
-  info.healthScore = computeHealthScore(info)
+  info.healthScore = computeHealthScore(info, weights)
   return info
 }
 
@@ -183,52 +211,64 @@ async function analyzeOne(
 // =====================================================================
 
 /**
- * 按 PLAN Step 11 的加权公式计算 0-100 分
+ * 按加权公式计算 0-100 分
  *
+ * 权重可自定义，各维度按比例缩放。
  * 导出以供单元测试覆盖所有边界。
  */
-export function computeHealthScore(info: HealthInfo): number {
+export function computeHealthScore(
+  info: HealthInfo,
+  weights?: HealthWeights,
+): number {
   if (info.deprecated) return 0
+
+  const w = {
+    weeklyDownloads: weights?.weeklyDownloads ?? 25,
+    lastPublish: weights?.lastPublish ?? 25,
+    githubStars: weights?.githubStars ?? 15,
+    maintainers: weights?.maintainers ?? 10,
+    hasTypeScriptTypes: weights?.hasTypeScriptTypes ?? 10,
+    downloadTrend: weights?.downloadTrend ?? 15,
+  }
 
   let score = 0
 
-  // 下载量（25 分）
-  if (info.weeklyDownloads > 100_000) score += 25
-  else if (info.weeklyDownloads > 10_000) score += 18
-  else if (info.weeklyDownloads > 1_000) score += 10
-  else score += 3
+  // 下载量
+  if (info.weeklyDownloads > 100_000) score += w.weeklyDownloads
+  else if (info.weeklyDownloads > 10_000) score += w.weeklyDownloads * 0.72
+  else if (info.weeklyDownloads > 1_000) score += w.weeklyDownloads * 0.4
+  else score += w.weeklyDownloads * 0.12
 
-  // 最近发布（25 分）
+  // 最近发布
   const m = monthsSince(info.lastPublish)
   if (m !== null) {
-    if (m < 1) score += 25
-    else if (m < 6) score += 18
-    else if (m < 12) score += 10
-    else if (m < 24) score += 3
+    if (m < 1) score += w.lastPublish
+    else if (m < 6) score += w.lastPublish * 0.72
+    else if (m < 12) score += w.lastPublish * 0.4
+    else if (m < 24) score += w.lastPublish * 0.12
     // > 2 年不加分
   }
-  // 无 lastPublish 时不加分
 
-  // GitHub stars（15 分）
+  // GitHub stars
   const stars = info.githubStars ?? 0
-  if (stars > 10_000) score += 15
-  else if (stars > 1_000) score += 10
-  else if (stars > 100) score += 5
+  if (stars > 10_000) score += w.githubStars
+  else if (stars > 1_000) score += w.githubStars * (2 / 3)
+  else if (stars > 100) score += w.githubStars / 3
 
-  // maintainers（10 分）
-  if (info.maintainers > 3) score += 10
-  else if (info.maintainers > 1) score += 6
-  else score += 2
+  // maintainers
+  if (info.maintainers > 3) score += w.maintainers
+  else if (info.maintainers > 1) score += w.maintainers * 0.6
+  else score += w.maintainers * 0.2
 
-  // TS 类型支持（10 分）
-  if (info.hasTypeScriptTypes) score += 10
+  // TS 类型支持
+  if (info.hasTypeScriptTypes) score += w.hasTypeScriptTypes
 
-  // 下载趋势（15 分）
-  if (info.downloadTrend === 'up') score += 15
-  else if (info.downloadTrend === 'stable') score += 10
+  // 下载趋势
+  if (info.downloadTrend === 'up') score += w.downloadTrend
+  else if (info.downloadTrend === 'stable') score += w.downloadTrend * (2 / 3)
   // down: 0
 
-  return Math.min(100, score)
+  return Math.min(100, Math.round(score))
 }
 
 // =====================================================================
@@ -309,32 +349,3 @@ async function safeTrend(
  *
  * 非 GitHub URL 返回 null。
  */
-export function parseGitHubOwnerRepo(
-  url: string,
-): { owner: string; repo: string } | null {
-  if (!url) return null
-
-  // github:owner/repo 短格式
-  const shortMatch = url.match(/^github:([^/\s]+)\/([^/\s#?]+)/i)
-  if (shortMatch) {
-    return { owner: shortMatch[1]!, repo: stripGitSuffix(shortMatch[2]!) }
-  }
-
-  // git@github.com:owner/repo.git
-  const sshMatch = url.match(/git@github\.com:([^/]+)\/([^/\s#?]+)/i)
-  if (sshMatch) {
-    return { owner: sshMatch[1]!, repo: stripGitSuffix(sshMatch[2]!) }
-  }
-
-  // 通用 URL（github.com/owner/repo）
-  const urlMatch = url.match(/github\.com[/:]([^/]+)\/([^/\s#?]+)/i)
-  if (urlMatch) {
-    return { owner: urlMatch[1]!, repo: stripGitSuffix(urlMatch[2]!) }
-  }
-
-  return null
-}
-
-function stripGitSuffix(s: string): string {
-  return s.replace(/\.git$/, '')
-}

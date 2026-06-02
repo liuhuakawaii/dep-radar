@@ -19,6 +19,7 @@ vi.mock('../data/npm.js', () => ({
 }))
 vi.mock('../data/github.js', () => ({
   getRepoInfo: vi.fn(),
+  parseGitHubUrl: vi.fn(),
 }))
 
 const { getPackageSize } = await import('../data/pkg-size.js')
@@ -28,7 +29,7 @@ const {
   getDownloadCount,
   getDownloadTrend,
 } = await import('../data/npm.js')
-const { getRepoInfo } = await import('../data/github.js')
+const { getRepoInfo, parseGitHubUrl } = await import('../data/github.js')
 const { _resetGithubTokenWarnedForTests } =
   await import('./buildHealthFetcher.js')
 const { analyzeCommand } = await import('./analyze.js')
@@ -40,6 +41,7 @@ const npmInfo = getPackageInfo as unknown as ReturnType<typeof vi.fn>
 const npmDl = getDownloadCount as unknown as ReturnType<typeof vi.fn>
 const npmTrend = getDownloadTrend as unknown as ReturnType<typeof vi.fn>
 const ghRepo = getRepoInfo as unknown as ReturnType<typeof vi.fn>
+const parseGH = parseGitHubUrl as unknown as ReturnType<typeof vi.fn>
 
 describe('analyzeCommand', () => {
   let dir: string
@@ -51,6 +53,7 @@ describe('analyzeCommand', () => {
     npmDl.mockReset()
     npmTrend.mockReset()
     ghRepo.mockReset()
+    parseGH.mockReset()
     _resetGithubTokenWarnedForTests()
     dir = mkdtempSync(join(tmpdir(), 'dep-radar-analyze-'))
   })
@@ -195,6 +198,7 @@ describe('analyzeCommand', () => {
 
   describe('--only health', () => {
     function mockHealthyReact() {
+      parseGH.mockReturnValue({ owner: 'facebook', repo: 'react' })
       npmFullDoc.mockResolvedValue({
         name: 'react',
         'dist-tags': { latest: '18.3.1' },

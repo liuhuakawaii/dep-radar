@@ -62,14 +62,14 @@ describe('buildHealthFetcher', () => {
     const f = buildHealthFetcher()
     const got = await f.getFullDoc('react')
     expect(got).toEqual({ name: 'react' })
-    expect(fullDoc).toHaveBeenCalledWith('react')
+    expect(fullDoc).toHaveBeenCalledWith('react', undefined, undefined)
   })
 
   it('getWeeklyDownloads 应使用 last-week 周期', async () => {
     dlCount.mockResolvedValueOnce(123)
     const f = buildHealthFetcher()
     await f.getWeeklyDownloads('react')
-    expect(dlCount).toHaveBeenCalledWith('react', 'last-week')
+    expect(dlCount).toHaveBeenCalledWith('react', 'last-week', undefined)
   })
 
   it('getTrend 应代理到 npm.getDownloadTrend', async () => {
@@ -83,7 +83,7 @@ describe('buildHealthFetcher', () => {
     const f = buildHealthFetcher()
     const got = await f.getGitHubRepo('a', 'b')
     expect(got).toEqual({ stargazers_count: 100 })
-    expect(repoInfo).toHaveBeenCalledWith('a', 'b')
+    expect(repoInfo).toHaveBeenCalledWith('a', 'b', undefined)
   })
 
   it('getGitHubRepo 任意错误都应转 null（软失败）', async () => {

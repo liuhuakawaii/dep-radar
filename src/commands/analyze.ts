@@ -4,7 +4,8 @@
  * 按 `--only` 维度分支：
  *   - size（默认）：体积分析（pkg-size / bundlephobia）
  *   - health：依赖健康度（npm registry + downloads + GitHub）
- *   - license / security：占位（待 Step 12/15 实现）
+ *   - license：许可证合规检查（SPDX 表达式解析 + 风险分级）
+ *   - security：安全漏洞审计（npm/pnpm/yarn audit）
  *
  * 退出码规则：
  *   - 0 OK
@@ -23,10 +24,12 @@ import { analyzeBundleSize } from '../analyzers/bundle.js'
 import { analyzeHealth } from '../analyzers/health.js'
 import { analyzeLicenses } from '../analyzers/license.js'
 import { analyzeSecurity, type AuditExecutor } from '../analyzers/security.js'
+import { DataCache } from '../data/cache.js'
 import { loadUserConfig } from '../config/loader.js'
 import { ConfigError, PackageNotFoundError } from '../errors/index.js'
 import { renderHtmlReport } from '../report/html.js'
 import { renderJsonReport } from '../report/json.js'
+import { renderMarkdownReport } from '../report/markdown.js'
 import { renderTerminalReport } from '../report/terminal.js'
 import type {
   AnalysisReport,
@@ -37,8 +40,15 @@ import type { DepRadarConfig } from '../types/config.js'
 import type { PackageJson } from '../types/package.js'
 import { EXIT_CODES, type ExitCode } from '../utils/exitCode.js'
 import { readPackageJson } from '../utils/fs.js'
+import { formatBytes, stripAnsi } from '../utils/format.js'
+import { getChangedDependencies } from '../utils/gitDiff.js'
 import { logger } from '../utils/logger.js'
-import { detectPackageManager, PM_COMMANDS } from '../utils/packageManager.js'
+import {
+  detectPackageManager,
+  detectYarnVersion,
+  PM_COMMANDS,
+  YARN_CLASSIC_COMMANDS,
+} from '../utils/packageManager.js'
 
 import { buildBundleFetcher } from './buildBundleFetcher.js'
 import { buildHealthFetcher } from './buildHealthFetcher.js'
@@ -46,17 +56,82 @@ import { buildLicenseFetcher } from './buildLicenseFetcher.js'
 
 export type AnalyzeDimension = 'size' | 'health' | 'license' | 'security'
 
+const ALL_DIMENSIONS: AnalyzeDimension[] = [
+  'size',
+  'health',
+  'license',
+  'security',
+]
+
+/**
+ * 解析 --only 参数为维度数组
+ *
+ * 支持：
+ * - 单维度：'size'
+ * - 逗号分隔：'size,health'
+ * - 'all'：全部维度
+ */
+export function parseDimensions(only: string): AnalyzeDimension[] {
+  if (only === 'all') return [...ALL_DIMENSIONS]
+  const parts = only
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean)
+  const valid: AnalyzeDimension[] = []
+  for (const p of parts) {
+    if (ALL_DIMENSIONS.includes(p as AnalyzeDimension)) {
+      valid.push(p as AnalyzeDimension)
+    } else {
+      logger.warn(
+        `未知维度 "${p}"，已跳过（可选：${ALL_DIMENSIONS.join(', ')}）`,
+      )
+    }
+  }
+  return valid.length > 0 ? valid : ['size']
+}
+
 export interface AnalyzeOptions {
-  /** 输出格式：terminal（默认）/ json / html */
-  format?: 'terminal' | 'json' | 'html'
+  /** 输出格式：terminal（默认）/ json / html / markdown */
+  format?: 'terminal' | 'json' | 'html' | 'markdown'
   /** 输出到文件（不传则打到 stdout） */
   output?: string
   /** topN 体积大户（仅 size 维度有效） */
   top?: number
   /** 是否同时分析 devDependencies */
   includeDev?: boolean
-  /** 分析维度；默认 size */
-  only?: AnalyzeDimension
+  /** 分析维度；默认 size；支持逗号分隔多维度（如 "size,health"）或 "all" */
+  only?: string
+  /** CLI 全局选项中的缓存开关（--no-cache 时为 false） */
+  cacheEnabled?: boolean
+  /** CLI 全局选项中的缓存目录 */
+  cacheDir?: string
+  /** 自定义 npm registry URL */
+  registry?: string
+  /** 并发请求数；默认 5 */
+  concurrency?: number
+  /** 增量分析：只分析相对于指定 git ref 变更的依赖 */
+  since?: string
+  /** verbose 模式：逐包输出结果 */
+  verbose?: boolean
+}
+
+/**
+ * 根据 CLI 全局选项和用户配置创建缓存实例
+ *
+ * 供 analyze / optimize 等命令复用。
+ *
+ * @returns DataCache 实例，或 undefined（缓存禁用时）
+ */
+export function createCacheFromGlobals(options: {
+  cacheEnabled?: boolean
+  cacheDir?: string
+  cacheTTL?: number
+}): DataCache | undefined {
+  if (options.cacheEnabled === false) return undefined
+  return new DataCache({
+    cacheDir: options.cacheDir,
+    ttl: options.cacheTTL ? options.cacheTTL * 1000 : undefined,
+  })
 }
 
 /**
@@ -72,6 +147,12 @@ export async function analyzeCommand(
     top = 10,
     includeDev = false,
     only = 'size',
+    cacheEnabled,
+    cacheDir,
+    registry,
+    concurrency,
+    since,
+    verbose = false,
   } = options
 
   // ============================================================
@@ -81,26 +162,90 @@ export async function analyzeCommand(
   if (setup === null) return EXIT_CODES.ERROR
   const { config, pkg, pm } = setup
 
+  // 创建缓存实例
+  const cache = createCacheFromGlobals({
+    cacheEnabled,
+    cacheDir,
+    cacheTTL: config.cacheTTL,
+  })
+
+  // registry 优先级：CLI --registry > config.registry
+  const resolvedRegistry = registry ?? config.registry
+
+  // concurrency 优先级：CLI --concurrency > config.concurrency > 默认 5
+  const resolvedConcurrency = concurrency ?? config.concurrency ?? 5
+
+  // 增量分析：过滤为仅变更的依赖
+  let analysisPkg = pkg
+  if (since) {
+    try {
+      const changed = await getChangedDependencies(projectPath, since)
+      const changedSet = new Set([...changed.added, ...changed.changed])
+      if (changedSet.size === 0) {
+        logger.info(`自 ${since} 以来无依赖变更`)
+        return EXIT_CODES.OK
+      }
+      logger.info(
+        `增量分析：${changed.added.length} 新增, ${changed.changed.length} 变更, ${changed.removed.length} 移除`,
+      )
+      // 创建只包含变更依赖的 package.json 副本
+      analysisPkg = {
+        ...pkg,
+        dependencies: filterDeps(pkg.dependencies, changedSet),
+        devDependencies: filterDeps(pkg.devDependencies, changedSet),
+      }
+    } catch (err) {
+      logger.warn(
+        `增量分析失败（回退到全量）：${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+
   // ============================================================
   // 2. 按维度跑分析；组装报告
   // ============================================================
-  const baseReport = makeEmptyReport(pkg.name, pm)
-  let report: AnalysisReport
+  const baseReport = makeEmptyReport(analysisPkg.name, pm)
+  const dimensions = parseDimensions(only)
+  let report = baseReport
 
   try {
-    if (only === 'size') {
-      report = await runSize(baseReport, pkg, config, { top, includeDev })
-    } else if (only === 'health') {
-      report = await runHealth(baseReport, pkg, config, { includeDev })
-    } else if (only === 'license') {
-      report = await runLicense(baseReport, pkg, config, { includeDev })
-    } else if (only === 'security') {
-      report = await runSecurity(baseReport, pkg, projectPath, pm, config, {
-        includeDev,
-      })
-    } else {
-      logger.warn(`维度 "${only}" 尚未实现，将在后续 Phase 接入`)
-      report = baseReport
+    for (const dim of dimensions) {
+      if (dim === 'size') {
+        report = await runSize(report, analysisPkg, config, {
+          top,
+          includeDev,
+          cache,
+          concurrency: resolvedConcurrency,
+          verbose,
+        })
+      } else if (dim === 'health') {
+        report = await runHealth(report, analysisPkg, config, {
+          includeDev,
+          cache,
+          registry: resolvedRegistry,
+          concurrency: resolvedConcurrency,
+        })
+      } else if (dim === 'license') {
+        report = await runLicense(report, analysisPkg, config, {
+          includeDev,
+          cache,
+          registry: resolvedRegistry,
+          concurrency: resolvedConcurrency,
+        })
+      } else if (dim === 'security') {
+        report = await runSecurity(
+          report,
+          analysisPkg,
+          projectPath,
+          pm,
+          config,
+          {
+            includeDev,
+          },
+        )
+      } else {
+        logger.warn(`维度 "${dim}" 尚未实现，将在后续 Phase 接入`)
+      }
     }
   } catch (err) {
     logger.error(err instanceof Error ? err.message : String(err))
@@ -114,7 +259,9 @@ export async function analyzeCommand(
 
   if (output) {
     try {
-      await writeFile(output, rendered, 'utf-8')
+      // terminal 格式写文件时去除 ANSI 转义码，避免乱码
+      const content = format === 'terminal' ? stripAnsi(rendered) : rendered
+      await writeFile(output, content, 'utf-8')
       logger.success(`报告已写入 ${output}`)
     } catch (err) {
       logger.error(
@@ -135,13 +282,15 @@ export async function analyzeCommand(
 /** 统一的格式分发；同时被 optimize 命令复用 */
 export function renderReport(
   report: AnalysisReport,
-  format: 'terminal' | 'json' | 'html',
+  format: 'terminal' | 'json' | 'html' | 'markdown',
 ): string {
   switch (format) {
     case 'json':
       return renderJsonReport(report)
     case 'html':
       return renderHtmlReport(report)
+    case 'markdown':
+      return renderMarkdownReport(report)
     case 'terminal':
     default:
       return renderTerminalReport(report)
@@ -155,23 +304,46 @@ export function renderReport(
 interface SizeOptions {
   top: number
   includeDev: boolean
+  cache?: DataCache
+  concurrency: number
+  verbose?: boolean
 }
 
 async function runSize(
   base: AnalysisReport,
   pkg: PackageJson,
   config: DepRadarConfig,
-  { top, includeDev }: SizeOptions,
+  { top, includeDev, cache, concurrency, verbose }: SizeOptions,
 ): Promise<AnalysisReport> {
   const spinner = ora('正在分析依赖体积...').start()
   let result
   try {
-    const fetcher = buildBundleFetcher({ dataSource: config.dataSource })
+    const fetcher = buildBundleFetcher({
+      dataSource: config.dataSource,
+      cache,
+      bundlephobiaRecord: config.bundlephobiaRecord,
+    })
     result = await analyzeBundleSize(pkg, fetcher, {
-      concurrency: 5,
+      concurrency,
       topN: top,
       includeDev,
       ignore: config.ignore,
+      onProgress: ({ current, total, name }) => {
+        spinner.text = `正在分析体积 [${current}/${total}] ${name}...`
+      },
+      onResult: verbose
+        ? ({ result: r }) => {
+            const size = formatBytes(r.size)
+            const gzip = formatBytes(r.gzip)
+            if (r.error) {
+              logger.debug(`  ${r.name} — ${r.error}`)
+            } else {
+              logger.debug(
+                `  ${r.name} ${r.version}  size=${size}  gzip=${gzip}`,
+              )
+            }
+          }
+        : undefined,
     })
     spinner.succeed('体积分析完成')
   } catch (err) {
@@ -202,22 +374,29 @@ async function runSize(
 
 interface HealthDimOptions {
   includeDev: boolean
+  cache?: DataCache
+  registry?: string
+  concurrency: number
 }
 
 async function runHealth(
   base: AnalysisReport,
   pkg: PackageJson,
   config: DepRadarConfig,
-  { includeDev }: HealthDimOptions,
+  { includeDev, cache, registry, concurrency }: HealthDimOptions,
 ): Promise<AnalysisReport> {
   const spinner = ora('正在分析依赖健康度...').start()
   let result
   try {
-    const fetcher = buildHealthFetcher()
+    const fetcher = buildHealthFetcher({ cache, registry })
     result = await analyzeHealth(pkg, fetcher, {
-      concurrency: 5,
+      concurrency,
       includeDev,
       ignore: config.ignore,
+      healthWeights: config.healthWeights,
+      onProgress: ({ current, total, name }) => {
+        spinner.text = `正在分析健康度 [${current}/${total}] ${name}...`
+      },
     })
     spinner.succeed('健康度分析完成')
   } catch (err) {
@@ -255,20 +434,23 @@ function countDeprecated(list: HealthInfo[]): number {
 
 interface LicenseDimOptions {
   includeDev: boolean
+  cache?: DataCache
+  registry?: string
+  concurrency: number
 }
 
 async function runLicense(
   base: AnalysisReport,
   pkg: PackageJson,
   config: DepRadarConfig,
-  { includeDev }: LicenseDimOptions,
+  { includeDev, cache, registry, concurrency }: LicenseDimOptions,
 ): Promise<AnalysisReport> {
   const spinner = ora('正在分析许可证合规...').start()
   let result
   try {
-    const fetcher = buildLicenseFetcher()
+    const fetcher = buildLicenseFetcher({ cache, registry })
     result = await analyzeLicenses(pkg, fetcher, {
-      concurrency: 5,
+      concurrency,
       includeDev,
       ignore: config.ignore,
     })
@@ -332,7 +514,12 @@ async function runSecurity(
   config: DepRadarConfig,
   { includeDev }: SecurityDimOptions,
 ): Promise<AnalysisReport> {
-  const auditCmd = PM_COMMANDS[pm].audit
+  // yarn classic 使用不同的 audit 命令
+  let auditCmd = PM_COMMANDS[pm].audit
+  if (pm === 'yarn') {
+    const yarnVersion = await detectYarnVersion(projectPath)
+    if (yarnVersion === 'classic') auditCmd = YARN_CLASSIC_COMMANDS.audit
+  }
   const spinner = ora('正在执行安全审计...').start()
   let result
   try {
@@ -485,4 +672,16 @@ function decideExitCode(
   }
 
   return EXIT_CODES.OK
+}
+
+function filterDeps(
+  deps: Record<string, string> | undefined,
+  names: Set<string>,
+): Record<string, string> | undefined {
+  if (!deps) return deps
+  const filtered: Record<string, string> = {}
+  for (const [name, version] of Object.entries(deps)) {
+    if (names.has(name)) filtered[name] = version
+  }
+  return filtered
 }

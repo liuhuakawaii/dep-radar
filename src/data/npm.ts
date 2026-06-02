@@ -19,9 +19,10 @@ import type {
   NpmFullDocResponse,
   NpmRegistryResponse,
 } from '../types/api.js'
+import type { DataCache } from './cache.js'
 import { fetchJson } from './http.js'
 
-const REGISTRY_URL = 'https://registry.npmjs.org'
+const DEFAULT_REGISTRY_URL = 'https://registry.npmjs.org'
 const DOWNLOADS_URL = 'https://api.npmjs.org/downloads'
 
 /** 把任意源的 NetworkError(404) 统一转成 PackageNotFoundError */
@@ -47,12 +48,19 @@ async function withNotFound<T>(
  */
 export async function getPackageInfo(
   name: string,
+  cache?: DataCache,
+  registry?: string,
 ): Promise<NpmRegistryResponse> {
-  return withNotFound(name, () =>
-    fetchJson<NpmRegistryResponse>(
-      `${REGISTRY_URL}/${encodeURIComponent(name)}/latest`,
-    ),
-  )
+  const baseUrl = registry ?? DEFAULT_REGISTRY_URL
+  const fetchFn = (): Promise<NpmRegistryResponse> =>
+    withNotFound(name, () =>
+      fetchJson<NpmRegistryResponse>(
+        `${baseUrl}/${encodeURIComponent(name)}/latest`,
+      ),
+    )
+
+  if (cache) return cache.withCache(`npm-info:${name}`, fetchFn)
+  return fetchFn()
 }
 
 /**
@@ -65,12 +73,17 @@ export async function getPackageInfo(
  */
 export async function getFullPackageInfo(
   name: string,
+  cache?: DataCache,
+  registry?: string,
 ): Promise<NpmFullDocResponse> {
-  return withNotFound(name, () =>
-    fetchJson<NpmFullDocResponse>(
-      `${REGISTRY_URL}/${encodeURIComponent(name)}`,
-    ),
-  )
+  const baseUrl = registry ?? DEFAULT_REGISTRY_URL
+  const fetchFn = (): Promise<NpmFullDocResponse> =>
+    withNotFound(name, () =>
+      fetchJson<NpmFullDocResponse>(`${baseUrl}/${encodeURIComponent(name)}`),
+    )
+
+  if (cache) return cache.withCache(`npm-full:${name}`, fetchFn)
+  return fetchFn()
 }
 
 /**
@@ -81,13 +94,19 @@ export async function getFullPackageInfo(
 export async function getDownloadCount(
   name: string,
   period: 'last-day' | 'last-week' | 'last-month',
+  cache?: DataCache,
 ): Promise<number> {
-  const res = await withNotFound(name, () =>
-    fetchJson<NpmDownloadsResponse>(
-      `${DOWNLOADS_URL}/point/${period}/${encodeURIComponent(name)}`,
-    ),
-  )
-  return res.downloads
+  const fetchFn = async (): Promise<number> => {
+    const res = await withNotFound(name, () =>
+      fetchJson<NpmDownloadsResponse>(
+        `${DOWNLOADS_URL}/point/${period}/${encodeURIComponent(name)}`,
+      ),
+    )
+    return res.downloads
+  }
+
+  if (cache) return cache.withCache(`npm-dl:${period}:${name}`, fetchFn)
+  return fetchFn()
 }
 
 /**
@@ -117,20 +136,26 @@ export async function getDownloadRange(
  */
 export async function getDownloadTrend(
   name: string,
+  cache?: DataCache,
 ): Promise<'up' | 'down' | 'stable'> {
-  const res = await getDownloadRange(name)
-  const days = res.downloads
-  if (days.length < 14) return 'stable'
+  const fetchFn = async (): Promise<'up' | 'down' | 'stable'> => {
+    const res = await getDownloadRange(name)
+    const days = res.downloads
+    if (days.length < 14) return 'stable'
 
-  const mid = Math.floor(days.length / 2)
-  const firstHalf = days.slice(0, mid).reduce((s, d) => s + d.downloads, 0)
-  const secondHalf = days.slice(mid).reduce((s, d) => s + d.downloads, 0)
+    const mid = Math.floor(days.length / 2)
+    const firstHalf = days.slice(0, mid).reduce((s, d) => s + d.downloads, 0)
+    const secondHalf = days.slice(mid).reduce((s, d) => s + d.downloads, 0)
 
-  // 前半月为 0（如新包或异常）时，直接看后半月是否有下载
-  if (firstHalf === 0) return secondHalf > 0 ? 'up' : 'stable'
+    // 前半月为 0（如新包或异常）时，直接看后半月是否有下载
+    if (firstHalf === 0) return secondHalf > 0 ? 'up' : 'stable'
 
-  const ratio = secondHalf / firstHalf
-  if (ratio > 1.1) return 'up'
-  if (ratio < 0.9) return 'down'
-  return 'stable'
+    const ratio = secondHalf / firstHalf
+    if (ratio > 1.1) return 'up'
+    if (ratio < 0.9) return 'down'
+    return 'stable'
+  }
+
+  if (cache) return cache.withCache(`npm-trend:${name}`, fetchFn)
+  return fetchFn()
 }
