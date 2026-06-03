@@ -97,7 +97,12 @@ export async function analyzeHealth(
     targets.map(entry =>
       limit(async () => {
         try {
-          const result = await analyzeOne(entry.name, fetcher, healthWeights)
+          const result = await analyzeOne(
+            entry.name,
+            fetcher,
+            healthWeights,
+            entry.isDirect,
+          )
           completed++
           onProgress?.({ current: completed, total, name: entry.name })
           return result
@@ -194,6 +199,7 @@ async function analyzeOne(
   name: string,
   fetcher: HealthFetcher,
   weights?: HealthWeights,
+  isDirect: boolean = true,
 ): Promise<HealthInfo> {
   // 1) 并行拉 npm doc + weekly downloads + trend
   const [doc, weeklyDownloads, downloadTrend] = await Promise.all([
@@ -253,6 +259,7 @@ async function analyzeOne(
     deprecatedMessage,
     hasTypeScriptTypes,
     healthScore: 0, // 占位，下一行覆盖
+    isDirect,
   }
   info.healthScore = computeHealthScore(info, weights)
   return info

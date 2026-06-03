@@ -149,6 +149,12 @@ export async function analyzeBundleSize(
   let completed = 0
   const total = toFetch.length
 
+  // 构建 isDirect 索引
+  const isDirectMap = new Map<string, boolean>()
+  for (const entry of entries) {
+    isDirectMap.set(entry.name, entry.isDirect)
+  }
+
   const fetched = await Promise.all(
     toFetch.map(({ name, packageName, version }) =>
       limit(async (): Promise<BundleInfo> => {
@@ -167,10 +173,12 @@ export async function analyzeBundleSize(
             hasJSNext: false,
             source: 'unknown',
             error: err instanceof Error ? err.message : String(err),
+            isDirect: isDirectMap.get(name) ?? false,
           }
         }
-        // 标注 resolvedVersion
+        // 标注 resolvedVersion 和 isDirect
         result.resolvedVersion = version
+        result.isDirect = isDirectMap.get(name) ?? false
         completed++
         onProgress?.({ current: completed, total, name })
         onResult?.({ current: completed, total, result })
@@ -262,6 +270,7 @@ export async function analyzeBundleSizeFromPackage(
             hasJSNext: false,
             source: 'unknown',
             error: err instanceof Error ? err.message : String(err),
+            isDirect: true,
           }
         }
         completed++

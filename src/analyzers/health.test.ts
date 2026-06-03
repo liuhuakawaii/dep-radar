@@ -66,6 +66,7 @@ function baseInfo(over: Partial<HealthInfo> = {}): HealthInfo {
     deprecated: false,
     hasTypeScriptTypes: false,
     healthScore: 0,
+    isDirect: true,
     ...over,
   }
 }

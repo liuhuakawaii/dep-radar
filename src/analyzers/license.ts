@@ -175,6 +175,7 @@ async function analyzeOne(
       normalizedLicense: undefined,
       needsHumanReview: true,
       humanReviewReason: 'license 字段缺失或为空',
+      isDirect: entry.isDirect,
     }
   }
 
@@ -192,6 +193,7 @@ async function analyzeOne(
       normalizedLicense: licenseStr,
       needsHumanReview: true,
       humanReviewReason: `license 字段为 "${licenseStr}"，需查看实际 license 文件`,
+      isDirect: entry.isDirect,
     }
   }
 
@@ -209,6 +211,7 @@ async function analyzeOne(
       normalizedLicense: licenseStr,
       needsHumanReview: true,
       humanReviewReason: `license 为 "${licenseStr}"，需确认商业授权`,
+      isDirect: entry.isDirect,
     }
   }
 
@@ -228,6 +231,7 @@ async function analyzeOne(
     needsHumanReview: category === 'unknown',
     humanReviewReason:
       category === 'unknown' ? `无法识别 license "${licenseStr}"` : undefined,
+    isDirect: entry.isDirect,
   }
 }
 
@@ -249,6 +253,7 @@ async function analyzeOneLegacy(
       risk: CATEGORY_RISK.unknown,
       conflict: '未声明 license 字段，需人工核实',
       source: 'latest',
+      isDirect: true, // 旧版入口默认为直接依赖
     }
   }
 
@@ -262,6 +267,7 @@ async function analyzeOneLegacy(
     risk,
     conflict: explainSinglePackage(category),
     source: 'latest',
+    isDirect: true, // 旧版入口默认为直接依赖
   }
 }
 

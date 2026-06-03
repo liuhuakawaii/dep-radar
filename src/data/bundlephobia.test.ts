@@ -37,6 +37,7 @@ describe('getPackageSize (bundlephobia)', () => {
       hasJSModule: false,
       hasJSNext: false,
       source: 'bundlephobia',
+      isDirect: true,
     })
     expect(got.brotli).toBeUndefined()
   })

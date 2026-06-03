@@ -37,6 +37,8 @@ export interface BundleInfo {
   source: 'pkg-size' | 'bundlephobia' | 'local' | 'unknown'
   /** 数据获取失败原因（如"私有包"、"网络超时"） */
   error?: string
+  /** 是否为直接依赖 */
+  isDirect: boolean
 }
 
 // =====================================================================
@@ -67,6 +69,8 @@ export interface HealthInfo {
   hasTypeScriptTypes: boolean
   /** 综合健康度 0-100；算法见 src/analyzers/health.ts */
   healthScore: number
+  /** 是否为直接依赖 */
+  isDirect: boolean
 }
 
 // =====================================================================
@@ -110,6 +114,8 @@ export interface LicenseInfo {
   needsHumanReview?: boolean
   /** 人工审核原因 */
   humanReviewReason?: string
+  /** 是否为直接依赖 */
+  isDirect: boolean
 }
 
 // =====================================================================

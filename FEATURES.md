@@ -167,6 +167,21 @@ export default defineConfig({
 
 **功能：** 将四大分析维度的结果聚合为可操作的优化建议。
 
+**核心设计原则：以直接依赖为中心**
+
+- **只对直接依赖生成优化建议**，不对子依赖单独生成建议
+- 子依赖的问题（deprecated、安全漏洞、许可证风险、健康度低）归入其直接依赖，作为直接依赖建议的"证据"
+- 用户只需关注直接依赖的建议，无需处理子依赖
+
+**为什么这样设计？**
+
+子依赖（如 jquery、@babel/plugin-proposal-class-properties）通常无法直接操作——用户不能直接卸载或替换它们。如果子依赖有问题，正确的方式是：
+
+1. 升级引入该子依赖的直接依赖到新版本
+2. 或者替换直接依赖为其他方案
+
+因此，将子依赖问题归入直接依赖，给出综合性的建议，更具有可操作性。
+
 **六条规则（按优先级从高到低）：**
 
 1. **Deprecated 包**（type=deprecated, priority=high）— 已废弃包直接标红
@@ -175,6 +190,18 @@ export default defineConfig({
 4. **健康度过低**（type=replace）— healthScore < 30，附带低分原因说明
 5. **许可证高风险**（type=replace）— license risk = high
 6. **高危漏洞无修复**（type=replace）— high/critical 级别漏洞且 fixAvailable = false
+
+**子依赖问题收集：**
+
+优化建议引擎会自动收集直接依赖的子依赖问题，并在建议中展示：
+
+```text
+● some-direct-dependency [deprecated] [high] [ready]
+  该包已被作者标记为 deprecated；其子依赖存在 2 个问题
+  caveats:
+    - 子依赖 some-transitive-dep: 该包已被标记为 deprecated
+    - 子依赖 another-transitive-dep: 存在 1 个 high 级别漏洞
+```
 
 **同包去重策略：**
 
@@ -608,9 +635,9 @@ interface DepRadarConfig {
 
 ### 10.3 分析结果类型 (`analysis.ts`)
 
-- `BundleInfo` — 单包体积信息
-- `HealthInfo` — 单包健康度信息
-- `LicenseInfo` / `LicenseCategory` — 许可证信息
+- `BundleInfo` — 单包体积信息（含 `isDirect` 字段标识是否为直接依赖）
+- `HealthInfo` — 单包健康度信息（含 `isDirect` 字段标识是否为直接依赖）
+- `LicenseInfo` / `LicenseCategory` — 许可证信息（含 `isDirect` 字段标识是否为直接依赖）
 - `SecurityInfo` / `Vulnerability` — 安全漏洞信息
 - `OptimizationSuggestion` / `OptimizationType` — 优化建议
 - `AnalysisReport` — 顶层报告聚合（含 `dimensions` 标记）

@@ -70,6 +70,7 @@ export async function getPackageSize(
       hasJSModule: data.hasJSModule,
       hasJSNext: data.hasJSNext,
       source: 'bundlephobia',
+      isDirect: true, // 默认值，调用方会覆盖
     }
   }
 

@@ -23,6 +23,7 @@ function bundle(over: Partial<BundleInfo> = {}): BundleInfo {
     hasJSModule: true,
     hasJSNext: false,
     source: 'pkg-size',
+    isDirect: true,
     ...over,
   }
 }
@@ -38,6 +39,7 @@ function health(over: Partial<HealthInfo> = {}): HealthInfo {
     deprecated: false,
     hasTypeScriptTypes: false,
     healthScore: 50,
+    isDirect: true,
     ...over,
   }
 }
@@ -48,6 +50,7 @@ function license(over: Partial<LicenseInfo> = {}): LicenseInfo {
     license: 'MIT',
     licenseType: 'permissive',
     risk: 'low',
+    isDirect: true,
     ...over,
   }
 }

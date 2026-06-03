@@ -57,6 +57,7 @@ export async function getPackageSize(
       hasJSModule: data.hasJSModule,
       hasJSNext: data.hasJSNext,
       source: 'pkg-size',
+      isDirect: true, // 默认值，调用方会覆盖
     }
   }
 

@@ -34,6 +34,7 @@ const sample: AnalysisReport = {
       hasJSModule: true,
       hasJSNext: false,
       source: 'pkg-size',
+      isDirect: true,
     },
   ],
   health: [],
