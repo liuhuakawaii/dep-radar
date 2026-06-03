@@ -326,7 +326,7 @@ export async function scanCommand(
   try {
     const bundleP = analyzeBundleSize(
       entries,
-      buildBundleFetcher({
+      await buildBundleFetcher({
         dataSource: config.dataSource,
         cache,
         bundlephobiaRecord: config.bundlephobiaRecord,

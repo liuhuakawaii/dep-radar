@@ -19,6 +19,7 @@ export type {
   OptimizationType,
   OptimizationSuggestion,
   AnalysisReport,
+  DiffReport,
 } from './analysis.js'
 
 export type {

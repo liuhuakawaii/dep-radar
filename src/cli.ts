@@ -5,6 +5,7 @@
  *   scan      ✅  日常依赖审查与优化建议（替代 analyze + optimize + report）
  *   explain   ✅  解释单个依赖为什么存在
  *   doctor    ✅  检查项目依赖健康基线
+ *   diff      ✅  对比两次扫描报告，显示依赖变更
  *
  * 全局选项：
  *   --no-cache       禁用缓存
@@ -23,6 +24,7 @@ import { resolve } from 'node:path'
 
 import { Command } from 'commander'
 
+import { diffCommand } from './commands/diff.js'
 import { doctorCommand } from './commands/doctor.js'
 import { explainCommand } from './commands/explain.js'
 import { scanCommand } from './commands/scan.js'
@@ -219,6 +221,28 @@ program
     })
     process.exit(exitCode)
   })
+
+// =====================================================================
+// diff
+// =====================================================================
+
+program
+  .command('diff')
+  .description('对比两次扫描报告，显示依赖变更')
+  .argument('<before>', '基线报告（JSON 文件）')
+  .argument('<after>', '当前报告（JSON 文件）')
+  .option('--format <type>', '输出格式: terminal|json', 'terminal')
+  .option('--json', 'JSON 输出（--format json 的简写）', false)
+  .option('--output <path>', '输出文件路径')
+  .action(
+    async (before: string, after: string, options: Record<string, unknown>) => {
+      const exitCode = await diffCommand(before, after, {
+        format: (options.json ? 'json' : options.format) as 'terminal' | 'json',
+        output: options.output as string | undefined,
+      })
+      process.exit(exitCode)
+    },
+  )
 
 // =====================================================================
 // 顶层错误处理

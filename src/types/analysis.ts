@@ -284,6 +284,43 @@ export interface AnalysisReport {
 }
 
 // =====================================================================
+// diff 命令结果
+// =====================================================================
+
+export interface DiffReport {
+  before: { project: string; timestamp: string }
+  after: { project: string; timestamp: string }
+  summary: {
+    totalGzip: { before: number; after: number }
+    totalSize: { before: number; after: number }
+    totalDependencies: { before: number; after: number }
+    deprecatedCount: { before: number; after: number }
+    vulnerabilities: {
+      before: { critical: number; high: number; moderate: number; low: number }
+      after: { critical: number; high: number; moderate: number; low: number }
+    }
+  }
+  bundles: {
+    added: BundleInfo[]
+    removed: BundleInfo[]
+    changed: Array<{
+      name: string
+      beforeGzip: number
+      afterGzip: number
+      delta: number
+    }>
+  }
+  health: {
+    newlyDeprecated: Array<{ name: string; message?: string }>
+    scoreChanges: Array<{ name: string; before: number; after: number }>
+  }
+  security: {
+    new: SecurityInfo[]
+    resolved: SecurityInfo[]
+  }
+}
+
+// =====================================================================
 // explain 命令结果
 // =====================================================================
 

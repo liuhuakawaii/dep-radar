@@ -94,6 +94,10 @@ dep-radar explain @types/node --include-dev
 
 # 检查项目依赖健康基线（纯本地，不发网络请求）
 dep-radar doctor
+
+# 对比两次扫描报告（PR 依赖审查）
+dep-radar diff before.json after.json
+dep-radar diff before.json after.json --format json --output diff.json
 ```
 
 ---
@@ -144,19 +148,19 @@ export default defineConfig({
 
 ### 配置项说明
 
-| 字段                 | 类型                              | 默认值                         | 说明                                         |
-| -------------------- | --------------------------------- | ------------------------------ | -------------------------------------------- |
-| `budget`             | `object`                          | -                              | 体积预算，CI 中超出则退出码 3                |
-| `budget.totalGzip`   | `number`                          | -                              | 项目总 gzip 体积上限（字节）                 |
-| `budget.perPackage`  | `Record<string, number>`          | -                              | 单包体积上限，`{ "moment": 0 }` 表示禁止使用 |
-| `ignore`             | `string[]`                        | `[]`                           | 忽略的包，支持 glob 模式                     |
-| `replacements`       | `Record<string, ReplacementRule>` | 内置表                         | 自定义替代方案，同名覆盖内置规则             |
-| `dataSource`         | `string[]`                        | `['pkg-size', 'bundlephobia']` | 数据源优先级，`'local'` 启用本地 esbuild     |
-| `registry`           | `string`                          | -                              | 自定义 npm registry URL                      |
-| `cacheTTL`           | `number`                          | `3600`                         | 缓存 TTL（秒）                               |
-| `concurrency`        | `number`                          | `5`                            | 并发请求数，建议范围 1-20                    |
-| `bundlephobiaRecord` | `boolean`                         | `false`                        | 是否向 Bundlephobia 写入查询记录             |
-| `healthWeights`      | `object`                          | 各维度默认权重之和 100         | 自定义健康度评分权重（见下文）               |
+| 字段                 | 类型                              | 默认值                         | 说明                                                       |
+| -------------------- | --------------------------------- | ------------------------------ | ---------------------------------------------------------- |
+| `budget`             | `object`                          | -                              | 体积预算，CI 中超出则退出码 3                              |
+| `budget.totalGzip`   | `number`                          | -                              | 项目总 gzip 体积上限（字节）                               |
+| `budget.perPackage`  | `Record<string, number>`          | -                              | 单包体积上限，`{ "moment": 0 }` 表示禁止使用               |
+| `ignore`             | `string[]`                        | `[]`                           | 忽略的包，支持 glob 模式                                   |
+| `replacements`       | `Record<string, ReplacementRule>` | 内置表                         | 自定义替代方案，同名覆盖内置规则                           |
+| `dataSource`         | `string[]`                        | `['pkg-size', 'bundlephobia']` | 数据源优先级；`'local'` 启用本地 esbuild（需安装 esbuild） |
+| `registry`           | `string`                          | -                              | 自定义 npm registry URL                                    |
+| `cacheTTL`           | `number`                          | `3600`                         | 缓存 TTL（秒）                                             |
+| `concurrency`        | `number`                          | `15`                           | 并发请求数，建议范围 1-20                                  |
+| `bundlephobiaRecord` | `boolean`                         | `false`                        | 是否向 Bundlephobia 写入查询记录                           |
+| `healthWeights`      | `object`                          | 各维度默认权重之和 100         | 自定义健康度评分权重（见下文）                             |
 
 #### healthWeights 子字段
 
@@ -270,6 +274,41 @@ dep-radar [全局选项] <command> [命令选项] [位置参数]
 | ----------------- | --------------------------- |
 | `--format <type>` | `terminal`（默认） / `json` |
 
+### `diff`（对比两次扫描报告）
+
+对比两份 `dep-radar scan` 生成的 JSON 报告，显示依赖变更（新增/移除包、体积变化、健康度变化、安全漏洞变化）。适用于 PR 依赖审查场景。
+
+#### 位置参数
+
+| 参数       | 说明                  |
+| ---------- | --------------------- |
+| `<before>` | 基线报告（JSON 文件） |
+| `<after>`  | 当前报告（JSON 文件） |
+
+#### 命令选项
+
+| 选项              | 说明                                |
+| ----------------- | ----------------------------------- |
+| `--format <type>` | `terminal`（默认，带颜色） / `json` |
+| `--json`          | `--format json` 的简写              |
+| `--output <path>` | 写入文件（不指定时打印到 stdout）   |
+
+#### 示例
+
+```bash
+# 基本用法
+dep-radar diff before.json after.json
+
+# JSON 输出（适合 CI 管道处理）
+dep-radar diff before.json after.json --json --output diff.json
+
+# 典型工作流：PR 前后各扫一次，再对比
+dep-radar scan --json --output before.json
+# ... 升级依赖 ...
+dep-radar scan --json --output after.json
+dep-radar diff before.json after.json
+```
+
 ### 全局选项
 
 所有命令通用，必须写在子命令名之前。
@@ -281,7 +320,7 @@ dep-radar [全局选项] <command> [命令选项] [位置参数]
 | `--no-cache`         | 禁用缓存                                                        |
 | `--cache-dir <path>` | 自定义缓存目录（不指定时走 `env-paths` 平台默认目录）           |
 | `--registry <url>`   | 自定义 npm registry（CLI 优先级高于配置文件 `registry` 字段）   |
-| `--concurrency <n>`  | 并发请求数（默认 `5`，建议 `1-20`）                             |
+| `--concurrency <n>`  | 并发请求数（默认 `15`，建议 `1-20`）                            |
 | `--offline`          | 离线模式：跳过所有网络请求（也可通过环境变量 `OFFLINE=1` 启用） |
 
 ### 环境变量

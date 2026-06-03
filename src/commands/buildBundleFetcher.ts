@@ -18,19 +18,6 @@ import { logger } from '../utils/logger.js'
 /** 支持的数据源标识 */
 export type DataSourceName = 'pkg-size' | 'bundlephobia' | 'local'
 
-/** 各数据源的实现 map（带缓存包装） */
-function buildSources(
-  cache?: DataCache,
-  bundlephobiaRecord = false,
-): Record<Exclude<DataSourceName, 'local'>, BundleFetcher> {
-  return {
-    'pkg-size': (name, version) => fromPkgSize(name, version, cache),
-    bundlephobia: (name, version) =>
-      fromBundlephobia(name, version, cache, bundlephobiaRecord),
-    // 'local': 在 Phase 3 实现（src/data/local-bundle.ts）
-  }
-}
-
 export interface BuildBundleFetcherOptions {
   /** 数据源优先级；默认 ['pkg-size', 'bundlephobia'] */
   dataSource?: DataSourceName[]
@@ -49,25 +36,42 @@ export interface BuildBundleFetcherOptions {
  * 3. 其他错误（网络异常、限流等）→ 记 verbose 日志后 fallback 到下一源
  * 4. 全部源失败 → 抛最后一次错误
  *
- * 当某源未在 SOURCES 中实现（如 'local'），会跳过并打 warn。
+ * 'local' 数据源通过动态导入 esbuild 实现（optionalDependency），
+ * 未安装时自动跳过。
  */
-export function buildBundleFetcher(
+export async function buildBundleFetcher(
   options: BuildBundleFetcherOptions = {},
-): BundleFetcher {
+): Promise<BundleFetcher> {
   const sources = (options.dataSource ?? ['pkg-size', 'bundlephobia']).filter(
     (s, i, arr) => arr.indexOf(s) === i, // 去重
   )
 
+  const { cache, bundlephobiaRecord = false } = options
   const fetchers: Array<{ name: string; fn: BundleFetcher }> = []
-  const sourceMap = buildSources(options.cache, options.bundlephobiaRecord)
+
   for (const s of sources) {
-    if (s === 'local') {
-      logger.warn(
-        `数据源 "local" 暂未实现（将在 Phase 3 接入本地 esbuild），跳过`,
-      )
-      continue
+    if (s === 'pkg-size') {
+      fetchers.push({
+        name: s,
+        fn: (name, version) => fromPkgSize(name, version, cache),
+      })
+    } else if (s === 'bundlephobia') {
+      fetchers.push({
+        name: s,
+        fn: (name, version) =>
+          fromBundlephobia(name, version, cache, bundlephobiaRecord),
+      })
+    } else if (s === 'local') {
+      try {
+        const { getPackageSize } = await import('../data/local-bundle.js')
+        fetchers.push({
+          name: s,
+          fn: (name, version) => getPackageSize(name, version, cache),
+        })
+      } catch {
+        logger.debug('local 数据源不可用（esbuild 未安装），跳过')
+      }
     }
-    fetchers.push({ name: s, fn: sourceMap[s] })
   }
 
   if (fetchers.length === 0) {
