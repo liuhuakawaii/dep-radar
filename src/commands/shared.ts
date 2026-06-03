@@ -80,18 +80,26 @@ export function createCacheFromGlobals(options: {
 export function renderReport(
   report: AnalysisReport,
   format: 'terminal' | 'json' | 'html' | 'markdown',
-  options?: { verbose?: boolean },
+  options?: { verbose?: boolean; showTransitive?: boolean },
 ): string {
   switch (format) {
     case 'json':
+      // JSON 总是输出全量原始数据，由消费者按需过滤
       return renderJsonReport(report)
     case 'html':
-      return renderHtmlReport(report)
+      return renderHtmlReport(report, {
+        showTransitive: options?.showTransitive,
+      })
     case 'markdown':
-      return renderMarkdownReport(report)
+      return renderMarkdownReport(report, {
+        showTransitive: options?.showTransitive,
+      })
     case 'terminal':
     default:
-      return renderTerminalReport(report, { verbose: options?.verbose })
+      return renderTerminalReport(report, {
+        verbose: options?.verbose,
+        showTransitive: options?.showTransitive,
+      })
   }
 }
 

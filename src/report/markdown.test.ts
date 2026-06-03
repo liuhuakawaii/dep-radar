@@ -284,7 +284,7 @@ describe('renderMarkdownReport', () => {
   // -----------------------------------------------------------------
 
   describe('安全漏洞 section', () => {
-    it('有漏洞时应输出表格，包含 direct/transitive 和 scope', () => {
+    it('默认只展示直接依赖漏洞，子依赖被隐藏并提示已归并到优化建议', () => {
       const out = renderMarkdownReport(
         makeReport({
           dimensions: {
@@ -332,6 +332,58 @@ describe('renderMarkdownReport', () => {
       expect(out).toContain('axios')
       expect(out).toContain('direct')
       expect(out).toContain('prod')
+      expect(out).toContain('[可修复]')
+      // 子依赖默认不直接列出
+      expect(out).not.toContain('semver')
+      expect(out).toContain('--deep')
+    })
+
+    it('showTransitive=true 时子依赖漏洞也出现在表中', () => {
+      const out = renderMarkdownReport(
+        makeReport({
+          dimensions: {
+            size: false,
+            health: false,
+            license: false,
+            security: true,
+            optimize: false,
+          },
+          security: [
+            makeSecurity({
+              name: 'axios',
+              isDirect: true,
+              scope: 'prod',
+              totalVulnerabilities: 1,
+              highestSeverity: 'high',
+              vulnerabilities: [
+                {
+                  severity: 'high',
+                  title: 'CSRF',
+                  url: '',
+                  fixAvailable: true,
+                },
+              ],
+            }),
+            makeSecurity({
+              name: 'semver',
+              isDirect: false,
+              scope: 'prod',
+              totalVulnerabilities: 1,
+              highestSeverity: 'moderate',
+              vulnerabilities: [
+                {
+                  severity: 'moderate',
+                  title: 'ReDoS',
+                  url: '',
+                  fixAvailable: false,
+                },
+              ],
+            }),
+          ],
+        }),
+        { showTransitive: true },
+      )
+      expect(out).toContain('axios')
       expect(out).toContain('semver')
       expect(out).toContain('transitive')
       expect(out).toContain('[可修复]')

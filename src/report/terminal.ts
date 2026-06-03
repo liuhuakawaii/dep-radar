@@ -35,10 +35,17 @@ import {
 } from '../utils/format.js'
 
 export interface TerminalReportOptions {
-  /** 显示完整输出（不过滤） */
+  /** 显示完整输出（不过滤条目数） */
   verbose?: boolean
   /** 每个 section 默认最多显示的条目数；默认 10 */
   maxItems?: number
+  /**
+   * 是否在 bundle / health / license / security 表中显示子依赖。
+   *
+   * 默认 false：只显示直接依赖。子依赖的问题已在「优化建议」中归并到对应直接依赖。
+   * 设为 true（对应 `--deep` 模式）时把所有 transitive 也列出来。
+   */
+  showTransitive?: boolean
 }
 
 /**
@@ -50,23 +57,28 @@ export function renderTerminalReport(
   report: AnalysisReport,
   options: TerminalReportOptions = {},
 ): string {
-  const { verbose = false, maxItems = 10 } = options
+  const { verbose = false, maxItems = 10, showTransitive = false } = options
 
   const sections = [
     renderHeader(report),
     renderSummary(report),
     report.dimensions.optimize ? renderRecommendedActions(report) : '',
     report.dimensions.size
-      ? renderBundleSection(report.bundles, verbose, maxItems)
+      ? renderBundleSection(report.bundles, verbose, maxItems, showTransitive)
       : '',
     report.dimensions.health
-      ? renderHealthSection(report.health, verbose, maxItems)
+      ? renderHealthSection(report.health, verbose, maxItems, showTransitive)
       : '',
     report.dimensions.license
-      ? renderLicenseSection(report.licenses, verbose, maxItems)
+      ? renderLicenseSection(report.licenses, verbose, maxItems, showTransitive)
       : '',
     report.dimensions.security
-      ? renderSecuritySection(report.security, verbose, maxItems)
+      ? renderSecuritySection(
+          report.security,
+          verbose,
+          maxItems,
+          showTransitive,
+        )
       : '',
     report.dimensions.optimize
       ? renderOptimizationSection(
@@ -161,7 +173,7 @@ function renderRecommendedActions(report: AnalysisReport): string {
   const pm = report.packageManager
   const actions: string[] = []
 
-  // 从优化建议中提取 top 3 高优先级项
+  // 从优化建议中提取 top 3 高优先级项（优化建议已是直接依赖维度）
   const topOpts = [...report.optimizations]
     .sort((a, b) => {
       const pri = { high: 3, medium: 2, low: 1 }
@@ -178,10 +190,11 @@ function renderRecommendedActions(report: AnalysisReport): string {
     }
   }
 
-  // 从安全漏洞中提取可修复项
+  // 从安全漏洞中提取「直接依赖」可修复项；子依赖漏洞应升级父直接依赖，不在此处单列
   const fixable = report.security
     .filter(
       s =>
+        s.isDirect !== false &&
         s.totalVulnerabilities > 0 &&
         s.vulnerabilities.some(v => v.fixAvailable),
     )
@@ -215,12 +228,27 @@ function renderBundleSection(
   bundles: BundleInfo[],
   verbose: boolean,
   maxItems: number,
+  showTransitive: boolean,
 ): string {
   if (bundles.length === 0) {
     return chalk.bold.underline('包体积') + '\n' + chalk.gray('  （无数据）')
   }
 
-  const sorted = [...bundles].sort((a, b) => b.gzip - a.gzip)
+  // 默认只展示直接依赖；子依赖的体积无法由项目直接干预
+  const filtered = showTransitive ? bundles : bundles.filter(b => b.isDirect)
+  const transitiveHidden = bundles.length - filtered.length
+
+  if (filtered.length === 0) {
+    return (
+      chalk.bold.underline('包体积') +
+      '\n' +
+      chalk.gray(
+        `  （无直接依赖体积数据；隐藏了 ${transitiveHidden} 个子依赖，--deep 查看全部）`,
+      )
+    )
+  }
+
+  const sorted = [...filtered].sort((a, b) => b.gzip - a.gzip)
   const shown = verbose ? sorted : sorted.slice(0, maxItems)
   const hidden = sorted.length - shown.length
   const totalGzip = sorted.reduce((s, b) => s + b.gzip, 0)
@@ -245,7 +273,19 @@ function renderBundleSection(
     hidden > 0
       ? chalk.gray(`\n  ... 还有 ${hidden} 个包未显示（--verbose 查看全部）`)
       : ''
-  return chalk.bold.underline('包体积') + '\n' + table.toString() + hiddenMsg
+  const transitiveMsg =
+    transitiveHidden > 0
+      ? chalk.gray(
+          `\n  （隐藏了 ${transitiveHidden} 个子依赖；--deep 查看全部）`,
+        )
+      : ''
+  return (
+    chalk.bold.underline('包体积') +
+    '\n' +
+    table.toString() +
+    hiddenMsg +
+    transitiveMsg
+  )
 }
 
 function renderSource(source: BundleInfo['source']): string {
@@ -269,6 +309,7 @@ function renderHealthSection(
   health: HealthInfo[],
   verbose: boolean,
   maxItems: number,
+  showTransitive: boolean,
 ): string {
   if (health.length === 0) {
     return (
@@ -276,7 +317,20 @@ function renderHealthSection(
     )
   }
 
-  const sorted = [...health].sort((a, b) => a.healthScore - b.healthScore)
+  const filtered = showTransitive ? health : health.filter(h => h.isDirect)
+  const transitiveHidden = health.length - filtered.length
+
+  if (filtered.length === 0) {
+    return (
+      chalk.bold.underline('依赖健康度') +
+      '\n' +
+      chalk.gray(
+        `  （无直接依赖健康度数据；隐藏了 ${transitiveHidden} 个子依赖，--deep 查看全部）`,
+      )
+    )
+  }
+
+  const sorted = [...filtered].sort((a, b) => a.healthScore - b.healthScore)
   const shown = verbose ? sorted : sorted.slice(0, maxItems)
   const hidden = sorted.length - shown.length
 
@@ -309,8 +363,18 @@ function renderHealthSection(
     hidden > 0
       ? chalk.gray(`\n  ... 还有 ${hidden} 个包未显示（--verbose 查看全部）`)
       : ''
+  const transitiveMsg =
+    transitiveHidden > 0
+      ? chalk.gray(
+          `\n  （隐藏了 ${transitiveHidden} 个子依赖；--deep 查看全部）`,
+        )
+      : ''
   return (
-    chalk.bold.underline('依赖健康度') + '\n' + table.toString() + hiddenMsg
+    chalk.bold.underline('依赖健康度') +
+    '\n' +
+    table.toString() +
+    hiddenMsg +
+    transitiveMsg
   )
 }
 
@@ -322,6 +386,7 @@ function renderLicenseSection(
   licenses: LicenseInfo[],
   verbose: boolean,
   maxItems: number,
+  showTransitive: boolean,
 ): string {
   if (licenses.length === 0) {
     return (
@@ -329,12 +394,22 @@ function renderLicenseSection(
     )
   }
 
-  const risky = licenses.filter(l => l.risk !== 'low')
+  const scope = showTransitive ? licenses : licenses.filter(l => l.isDirect)
+  const transitiveHidden = licenses.length - scope.length
+  const risky = scope.filter(l => l.risk !== 'low')
   if (risky.length === 0) {
+    const total = scope.length
+    const note =
+      transitiveHidden > 0
+        ? chalk.gray(
+            `（${transitiveHidden} 个子依赖未纳入展示；--deep 查看全部）`,
+          )
+        : ''
     return (
       chalk.bold.underline('许可证合规') +
       '\n' +
-      chalk.green(`  ✓ 全部 ${licenses.length} 个依赖许可证均为低风险`)
+      chalk.green(`  ✓ 全部 ${total} 个直接依赖许可证均为低风险 `) +
+      note
     )
   }
 
@@ -375,8 +450,18 @@ function renderLicenseSection(
           `\n  ... 还有 ${hidden} 个许可证问题未显示（--verbose 查看全部）`,
         )
       : ''
+  const transitiveMsg =
+    transitiveHidden > 0
+      ? chalk.gray(
+          `\n  （隐藏了 ${transitiveHidden} 个子依赖；--deep 查看全部）`,
+        )
+      : ''
   return (
-    chalk.bold.underline('许可证合规') + '\n' + table.toString() + hiddenMsg
+    chalk.bold.underline('许可证合规') +
+    '\n' +
+    table.toString() +
+    hiddenMsg +
+    transitiveMsg
   )
 }
 
@@ -388,6 +473,7 @@ function renderSecuritySection(
   security: SecurityInfo[],
   verbose: boolean,
   maxItems: number,
+  showTransitive: boolean,
 ): string {
   if (security.length === 0) {
     return (
@@ -397,12 +483,27 @@ function renderSecuritySection(
     )
   }
 
-  const vuln = security.filter(s => s.totalVulnerabilities > 0)
-  if (vuln.length === 0) {
+  const allVuln = security.filter(s => s.totalVulnerabilities > 0)
+  const directVuln = allVuln.filter(s => s.isDirect !== false)
+  const vuln = showTransitive ? allVuln : directVuln
+  const transitiveHidden = allVuln.length - vuln.length
+
+  if (allVuln.length === 0) {
     return (
       chalk.bold.underline('安全审计') +
       '\n' +
       chalk.green('  ✓ 未发现已知漏洞')
+    )
+  }
+
+  if (vuln.length === 0) {
+    return (
+      chalk.bold.underline('安全审计') +
+      '\n' +
+      chalk.green('  ✓ 未发现直接依赖的漏洞 ') +
+      chalk.gray(
+        `（${transitiveHidden} 个子依赖漏洞已归并到优化建议；--deep 查看全部）`,
+      )
     )
   }
 
@@ -440,6 +541,13 @@ function renderSecuritySection(
   if (hidden > 0) {
     lines.push(
       chalk.gray(`  ... 还有 ${hidden} 个漏洞未显示（--verbose 查看全部）`),
+    )
+  }
+  if (transitiveHidden > 0) {
+    lines.push(
+      chalk.gray(
+        `  （隐藏了 ${transitiveHidden} 个子依赖漏洞，已归并到优化建议；--deep 查看全部）`,
+      ),
     )
   }
   return lines.join('\n')

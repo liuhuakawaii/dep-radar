@@ -194,7 +194,7 @@ describe('renderHtmlReport', () => {
         ],
       }),
     )
-    expect(html).toContain('全部 1 个依赖')
+    expect(html).toContain('全部 1 个直接依赖')
   })
 
   it('license 含 high → 显示风险表', () => {

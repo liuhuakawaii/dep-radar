@@ -22,6 +22,22 @@
 
 详细功能说明见 `FEATURES.md`。
 
+### 设计原则：以直接依赖为中心
+
+`dep-radar` 默认只对**项目的直接依赖**（`dependencies` / `devDependencies` 等）出优化建议。子依赖的问题不会单独列条目，而是按问题类型分级归并到引入它的直接依赖上：
+
+| 子依赖问题               | 是否归并到父直接依赖        |
+| ------------------------ | --------------------------- |
+| 高危 / Critical 安全漏洞 | ✅ 作为父依赖建议的 caveats |
+| 高风险许可证             | ✅ 作为父依赖建议的 caveats |
+| Deprecated               | ✅ 作为父依赖建议的 caveats |
+| 体积大                   | ❌ 父依赖无法干预，不归并   |
+| 健康度低                 | ❌ 父依赖无法干预，不归并   |
+
+当某直接依赖**自身没有问题**但它拉入了 actionable 子依赖问题时，会合成一条 `upgrade` 建议，提示你升级或评估替换该直接依赖。
+
+`--deep` 选项用于在 bundle/health/license/security 表格中**也**展示子依赖，便于排查（注意：`--deep` 不会改变优化建议的"直接依赖中心"逻辑）。
+
 ---
 
 ## 安装
@@ -43,22 +59,40 @@ npx @liuhuakawaii/dep-radar scan
 ## 快速上手
 
 ```bash
-# 扫描项目依赖，输出审查结果和优化建议（默认命令）
+# 扫描当前目录（默认命令）
 dep-radar scan
+
+# 扫描指定项目
+dep-radar scan ./my-app
+
+# 同时分析 devDependencies
+dep-radar scan --include-dev
 
 # CI 模式：只对高优先级问题返回非零退出码
 dep-radar scan --ci
 
-# 深度模式：完整 lock 文件扫描（更慢但更全面）
+# 深度模式：在表格中也展示子依赖（默认只展示直接依赖；
+# 子依赖问题已归并到对应直接依赖的建议中）
 dep-radar scan --deep
 
-# 输出 JSON 到文件（适合 CI 集成）
+# 多种输出格式
 dep-radar scan --format json --output dep-report.json
+dep-radar scan --format html --output dep-report.html
+dep-radar scan --format markdown --output dep-report.md
+dep-radar scan --json                          # --format json 的简写
+
+# 增量分析：只看相对于 main 分支变更过的依赖
+dep-radar scan --since main
+
+# Monorepo 工作区
+dep-radar scan --workspace web-app             # 分析指定子包
+dep-radar scan --all-workspaces                # 全量汇总
 
 # 解释单个依赖为什么存在
 dep-radar explain lodash
+dep-radar explain @types/node --include-dev
 
-# 检查项目依赖健康基线
+# 检查项目依赖健康基线（纯本地，不发网络请求）
 dep-radar doctor
 ```
 
@@ -70,7 +104,7 @@ dep-radar doctor
 
 ### 方式一：JSON（推荐大多数用户）
 
-在项目根目录创建 `.deprdarrc.json`：
+在项目根目录创建 `.dep-radarrc.json`：
 
 ```json
 {
@@ -83,7 +117,11 @@ dep-radar doctor
 }
 ```
 
-也支持 `package.json` 中的 `"dep-radar"` 字段、`.deprdarrc.yaml`、`.deprdarrc.js`、`dep-radar.config.js` 等格式，由 [cosmiconfig](https://github.com/cosmiconfig/cosmiconfig) 自动发现。
+也支持以下位置/格式，由 [cosmiconfig](https://github.com/cosmiconfig/cosmiconfig) 自动发现（按搜索顺序）：
+
+- `package.json` 中的 `"dep-radar"` 字段
+- `.dep-radarrc` / `.dep-radarrc.json` / `.dep-radarrc.yaml` / `.dep-radarrc.yml` / `.dep-radarrc.js` / `.dep-radarrc.cjs`
+- `dep-radar.config.js` / `.cjs` / `.mjs` / `.ts`
 
 ### 方式二：TypeScript（需要类型提示时）
 
@@ -160,66 +198,112 @@ export GITHUB_TOKEN="ghp_xxx"
 
 ## CLI 参考
 
+全局调用形式：
+
+```
+dep-radar [全局选项] <command> [命令选项] [位置参数]
+```
+
+> 全局选项需写在 `<command>` 之前；命令选项写在命令名之后。
+
 ### `scan`（日常依赖审查与优化建议）
 
 替代原 `analyze` + `optimize` + `report`，统一为一个命令。默认只输出可操作建议。
 
-| 选项                 | 说明                                                   |
-| -------------------- | ------------------------------------------------------ |
-| `--ci`               | CI 模式：只对高优先级问题返回非零退出码                |
-| `--deep`             | 深度模式：完整 lock 文件扫描（更慢但更全面）           |
-| `--format <type>`    | `terminal`（默认） / `json` / `html` / `markdown`      |
-| `--output <path>`    | 写入文件                                               |
-| `--include-dev`      | 同时分析 `devDependencies`                             |
-| `--skip-health`      | 跳过健康度维度（避免 GitHub API 调用，速度更快）       |
-| `--skip-license`     | 跳过许可证维度                                         |
-| `--skip-security`    | 跳过安全审计维度                                       |
-| `--scope <scope>`    | 体积分析范围：`runtime`（默认）/ `all` / `non-runtime` |
-| `--stats <file>`     | webpack stats.json 路径（真实 bundle 分析）            |
-| `--assets-dir <dir>` | 构建输出目录（计算实际 gzip）                          |
-| `--since <ref>`      | 增量分析：只分析相对于指定 git ref 变更的依赖          |
-| `--workspace <name>` | 分析指定工作区子包                                     |
-| `--all-workspaces`   | 分析所有工作区子包并汇总                               |
+#### 位置参数
+
+| 参数     | 说明                                 |
+| -------- | ------------------------------------ |
+| `[path]` | 项目路径（默认 `.`，即当前工作目录） |
+
+#### 命令选项
+
+| 选项                 | 说明                                                                                                                                                                                                        |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--ci`               | CI 模式：只对高优先级问题返回非零退出码（细节见下方「退出码」表）                                                                                                                                           |
+| `--deep`             | 深度模式：在 bundle / health / license / security 表格中**也**展示子依赖。默认这些表只显示直接依赖；子依赖的 actionable 问题（deprecated / 高危漏洞 / 高风险许可证）会归并到父直接依赖的优化建议 caveats 中 |
+| `--format <type>`    | 输出格式：`terminal`（默认） / `json` / `html` / `markdown`                                                                                                                                                 |
+| `--json`             | `--format json` 的简写                                                                                                                                                                                      |
+| `--output <path>`    | 写入文件（不指定时打印到 stdout）                                                                                                                                                                           |
+| `--include-dev`      | 同时分析 `devDependencies`                                                                                                                                                                                  |
+| `--skip-health`      | 跳过健康度维度（避免 GitHub API 调用，速度更快）                                                                                                                                                            |
+| `--skip-license`     | 跳过许可证维度                                                                                                                                                                                              |
+| `--skip-security`    | 跳过安全审计维度（不跑 npm/pnpm/yarn audit）                                                                                                                                                                |
+| `--scope <scope>`    | 体积分析范围：`runtime`（默认） / `all` / `non-runtime`                                                                                                                                                     |
+| `--stats <file>`     | webpack `stats.json` 路径（启用真实 bundle 分析）                                                                                                                                                           |
+| `--assets-dir <dir>` | 构建输出目录（计算实际 gzip 体积）                                                                                                                                                                          |
+| `--since <ref>`      | 增量分析：只分析相对于指定 git ref 变更的依赖（如 `--since main`）                                                                                                                                          |
+| `--workspace <name>` | 分析指定工作区子包（pnpm-workspace.yaml / package.json `workspaces`）                                                                                                                                       |
+| `--all-workspaces`   | 分析所有工作区子包并汇总；退出码取所有子包最严重的那个                                                                                                                                                      |
 
 ### `explain`（解释单个依赖）
 
+解释指定包**为什么**出现在你的项目里：直接依赖还是子依赖、被哪些源文件 import、能不能安全移除。
+
+#### 位置参数
+
+| 参数        | 说明                              |
+| ----------- | --------------------------------- |
+| `<package>` | 要解释的包名（必填，如 `lodash`） |
+| `[path]`    | 项目路径（默认 `.`）              |
+
+#### 命令选项
+
 | 选项              | 说明                        |
 | ----------------- | --------------------------- |
-| `<package>`       | 要解释的包名（必填）        |
-| `[path]`          | 项目路径（默认 `.`）        |
 | `--format <type>` | `terminal`（默认） / `json` |
-| `--include-dev`   | 同时分析 `devDependencies`  |
+| `--include-dev`   | 同时考虑 `devDependencies`  |
 
-### `doctor`（项目健康检查）
+### `doctor`（项目健康基线检查）
 
-纯本地检查，不发网络请求。
+纯本地检查，不发任何网络请求；用于 CI 启动前的快速体检（lock 文件一致性、包管理器匹配等）。
+
+#### 位置参数
+
+| 参数     | 说明                 |
+| -------- | -------------------- |
+| `[path]` | 项目路径（默认 `.`） |
+
+#### 命令选项
 
 | 选项              | 说明                        |
 | ----------------- | --------------------------- |
-| `[path]`          | 项目路径（默认 `.`）        |
 | `--format <type>` | `terminal`（默认） / `json` |
 
 ### 全局选项
 
-| 选项                | 说明                            |
-| ------------------- | ------------------------------- |
-| `--verbose`         | 详细日志                        |
-| `--silent`          | 静默模式                        |
-| `--no-cache`        | 禁用缓存                        |
-| `--cache-dir`       | 自定义缓存目录                  |
-| `--registry`        | 自定义 npm registry             |
-| `--concurrency <n>` | 并发请求数（默认 5，建议 1-20） |
-| `--offline`         | 离线模式，跳过所有网络请求      |
+所有命令通用，必须写在子命令名之前。
 
-### CI 集成的退出码
+| 选项                 | 说明                                                            |
+| -------------------- | --------------------------------------------------------------- |
+| `--verbose`          | 显示详细日志（包括每个 analyzer 的进度细节）                    |
+| `--silent`           | 静默模式（屏蔽 INFO / WARN，只保留 ERROR）                      |
+| `--no-cache`         | 禁用缓存                                                        |
+| `--cache-dir <path>` | 自定义缓存目录（不指定时走 `env-paths` 平台默认目录）           |
+| `--registry <url>`   | 自定义 npm registry（CLI 优先级高于配置文件 `registry` 字段）   |
+| `--concurrency <n>`  | 并发请求数（默认 `5`，建议 `1-20`）                             |
+| `--offline`          | 离线模式：跳过所有网络请求（也可通过环境变量 `OFFLINE=1` 启用） |
 
-| 码  | 含义                                                            |
-| --- | --------------------------------------------------------------- |
-| 0   | OK                                                              |
-| 1   | 通用错误（IO / 网络 / 配置）                                    |
-| 2   | 发现高危 / 严重漏洞（`scan --ci` 时 direct prod critical/high） |
-| 3   | 体积超出 `budget`                                               |
-| 4   | 检测到高风险许可证冲突                                          |
+### 环境变量
+
+| 变量           | 作用                                                                                               |
+| -------------- | -------------------------------------------------------------------------------------------------- |
+| `GITHUB_TOKEN` | GitHub API 认证。**强烈推荐**：未认证 60 req/h，认证后 5000 req/h（详见上文「配置 GITHUB_TOKEN」） |
+| `OFFLINE`      | 设为 `1` 时等同 `--offline`，跳过所有网络请求                                                      |
+| `FORCE_COLOR`  | chalk 标准变量：`0` 强制关闭彩色输出（CI 抓取日志时常用）                                          |
+| `NO_COLOR`     | 业界通用约定：设置即关闭彩色输出（chalk 自动识别）                                                 |
+
+### 退出码
+
+| 码  | 含义              | 触发条件                                                                                                                           |
+| --- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| 0   | OK                | 一切正常，或非 `--ci` 模式下所有问题都不构成 budget / license 阻塞                                                                 |
+| 1   | 通用错误          | IO / 网络 / 配置加载等致命错误                                                                                                     |
+| 2   | 高危 / 严重漏洞   | **非 `--ci`**：任意 critical / high 漏洞；**`--ci`**：仅直接 prod 依赖的 critical / high，或 P0 finding（如直接依赖被 deprecated） |
+| 3   | 体积超出 `budget` | `budget.totalGzip` 或 `budget.perPackage` 上限被突破                                                                               |
+| 4   | 高风险许可证冲突  | 存在 `risk: 'high'` 的许可证（默认涵盖 GPL / AGPL 等强 copyleft）                                                                  |
+
+> `--ci` 与默认模式的关键差异：默认模式对**任意** critical / high 漏洞都返回 2；`--ci` 模式只对**直接** prod 依赖的 critical / high（以及 P0 findings）返回 2，子依赖漏洞放行（因为父依赖才是你能操作的对象）。
 
 ---
 

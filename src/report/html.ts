@@ -31,12 +31,20 @@ import {
 // 主入口
 // =====================================================================
 
-export function renderHtmlReport(report: AnalysisReport): string {
+export interface HtmlReportOptions {
+  /** 是否在 bundle/health/license/security 表中展示子依赖（--deep 模式） */
+  showTransitive?: boolean
+}
+
+export function renderHtmlReport(
+  report: AnalysisReport,
+  options: HtmlReportOptions = {},
+): string {
   return [
     '<!doctype html>',
     '<html lang="zh-CN">',
     `<head>${renderHead(report)}</head>`,
-    `<body>${renderBody(report)}</body>`,
+    `<body>${renderBody(report, options.showTransitive ?? false)}</body>`,
     '</html>',
   ].join('\n')
 }
@@ -193,16 +201,16 @@ const CSS = `
 // body 主体
 // =====================================================================
 
-function renderBody(report: AnalysisReport): string {
+function renderBody(report: AnalysisReport, showTransitive: boolean): string {
   return `
   <div class="wrap">
     ${renderHeader(report)}
     ${renderSummaryCards(report)}
-    ${report.dimensions.size ? renderBundleSection(report.bundles) : ''}
+    ${report.dimensions.size ? renderBundleSection(report.bundles, showTransitive) : ''}
     ${report.dimensions.optimize ? renderOptimizationSection(report.optimizations) : ''}
-    ${report.dimensions.health ? renderHealthSection(report.health) : ''}
-    ${report.dimensions.license ? renderLicenseSection(report.licenses) : ''}
-    ${report.dimensions.security ? renderSecuritySection(report.security) : ''}
+    ${report.dimensions.health ? renderHealthSection(report.health, showTransitive) : ''}
+    ${report.dimensions.license ? renderLicenseSection(report.licenses, showTransitive) : ''}
+    ${report.dimensions.security ? renderSecuritySection(report.security, showTransitive) : ''}
     ${renderFooter()}
   </div>`
 }
@@ -256,11 +264,19 @@ function statCard(label: string, value: string, severity = ''): string {
 // 各 section
 // =====================================================================
 
-function renderBundleSection(bundles: BundleInfo[]): string {
+function renderBundleSection(
+  bundles: BundleInfo[],
+  showTransitive: boolean,
+): string {
   if (bundles.length === 0) {
     return `<h2>包体积</h2><div class="empty">（无数据）</div>`
   }
-  const sorted = [...bundles].sort((a, b) => b.gzip - a.gzip)
+  const scoped = showTransitive ? bundles : bundles.filter(b => b.isDirect)
+  const transitiveHidden = bundles.length - scoped.length
+  if (scoped.length === 0) {
+    return `<h2>包体积</h2><div class="empty">（无直接依赖体积数据；隐藏了 ${transitiveHidden} 个子依赖，--deep 查看全部）</div>`
+  }
+  const sorted = [...scoped].sort((a, b) => b.gzip - a.gzip)
   const totalGzip = sorted.reduce((s, b) => s + b.gzip, 0)
   const rows = sorted
     .map(b => {
@@ -278,6 +294,10 @@ function renderBundleSection(bundles: BundleInfo[]): string {
       </tr>`
     })
     .join('')
+  const note =
+    transitiveHidden > 0
+      ? `<div class="muted" style="margin-top:8px">隐藏了 ${transitiveHidden} 个子依赖；--deep 查看全部</div>`
+      : ''
   return `
   <h2>包体积</h2>
   <div class="card">
@@ -285,6 +305,7 @@ function renderBundleSection(bundles: BundleInfo[]): string {
       <thead><tr><th>包名</th><th>版本</th><th>gzip</th><th>占比</th><th>来源</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
+    ${note}
   </div>`
 }
 
@@ -380,11 +401,19 @@ function priorityBadge(p: string): string {
   return ''
 }
 
-function renderHealthSection(health: HealthInfo[]): string {
+function renderHealthSection(
+  health: HealthInfo[],
+  showTransitive: boolean,
+): string {
   if (health.length === 0) {
     return `<h2>依赖健康度</h2><div class="empty">（无数据）</div>`
   }
-  const rows = health
+  const scoped = showTransitive ? health : health.filter(h => h.isDirect)
+  const transitiveHidden = health.length - scoped.length
+  if (scoped.length === 0) {
+    return `<h2>依赖健康度</h2><div class="empty">（无直接依赖数据；隐藏了 ${transitiveHidden} 个子依赖，--deep 查看全部）</div>`
+  }
+  const rows = scoped
     .map(h => {
       const scoreColor =
         h.healthScore >= 70 ? 'green' : h.healthScore >= 40 ? 'yellow' : 'red'
@@ -399,6 +428,10 @@ function renderHealthSection(health: HealthInfo[]): string {
       </tr>`
     })
     .join('')
+  const note =
+    transitiveHidden > 0
+      ? `<div class="muted" style="margin-top:8px">隐藏了 ${transitiveHidden} 个子依赖；--deep 查看全部</div>`
+      : ''
   return `
   <h2>依赖健康度</h2>
   <div class="card">
@@ -406,16 +439,27 @@ function renderHealthSection(health: HealthInfo[]): string {
       <thead><tr><th>包名</th><th>健康度</th><th>周下载</th><th>最近发布</th><th>废弃</th><th>TS</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
+    ${note}
   </div>`
 }
 
-function renderLicenseSection(licenses: LicenseInfo[]): string {
+function renderLicenseSection(
+  licenses: LicenseInfo[],
+  showTransitive: boolean,
+): string {
   if (licenses.length === 0) {
     return `<h2>许可证合规</h2><div class="empty">（无数据）</div>`
   }
-  const risky = licenses.filter(l => l.risk !== 'low')
+  const scoped = showTransitive ? licenses : licenses.filter(l => l.isDirect)
+  const transitiveHidden = licenses.length - scoped.length
+  const risky = scoped.filter(l => l.risk !== 'low')
   if (risky.length === 0) {
-    return `<h2>许可证合规</h2><div class="card"><span class="badge green">✓</span> 全部 ${licenses.length} 个依赖许可证均为低风险</div>`
+    const total = scoped.length
+    const note =
+      transitiveHidden > 0
+        ? ` <span class="muted">（隐藏了 ${transitiveHidden} 个子依赖；--deep 查看全部）</span>`
+        : ''
+    return `<h2>许可证合规</h2><div class="card"><span class="badge green">✓</span> 全部 ${total} 个直接依赖许可证均为低风险${note}</div>`
   }
   const rows = risky
     .map(
@@ -429,6 +473,10 @@ function renderLicenseSection(licenses: LicenseInfo[]): string {
     </tr>`,
     )
     .join('')
+  const note =
+    transitiveHidden > 0
+      ? `<div class="muted" style="margin-top:8px">隐藏了 ${transitiveHidden} 个子依赖；--deep 查看全部</div>`
+      : ''
   return `
   <h2>许可证合规</h2>
   <div class="card">
@@ -436,16 +484,26 @@ function renderLicenseSection(licenses: LicenseInfo[]): string {
       <thead><tr><th>包名</th><th>许可证</th><th>类型</th><th>风险</th><th>冲突说明</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
+    ${note}
   </div>`
 }
 
-function renderSecuritySection(security: SecurityInfo[]): string {
+function renderSecuritySection(
+  security: SecurityInfo[],
+  showTransitive: boolean,
+): string {
   if (security.length === 0) {
     return `<h2>安全审计</h2><div class="card"><span class="badge green">✓</span> 未发现已知漏洞</div>`
   }
-  const vuln = security.filter(s => s.totalVulnerabilities > 0)
-  if (vuln.length === 0) {
+  const allVuln = security.filter(s => s.totalVulnerabilities > 0)
+  const directVuln = allVuln.filter(s => s.isDirect !== false)
+  const vuln = showTransitive ? allVuln : directVuln
+  const transitiveHidden = allVuln.length - vuln.length
+  if (allVuln.length === 0) {
     return `<h2>安全审计</h2><div class="card"><span class="badge green">✓</span> 未发现已知漏洞</div>`
+  }
+  if (vuln.length === 0) {
+    return `<h2>安全审计</h2><div class="card"><span class="badge green">✓</span> 未发现直接依赖漏洞 <span class="muted">（隐藏了 ${transitiveHidden} 个子依赖漏洞，已归并到优化建议；--deep 查看全部）</span></div>`
   }
   const items = vuln
     .map(
@@ -462,7 +520,11 @@ function renderSecuritySection(security: SecurityInfo[]): string {
     </div>`,
     )
     .join('')
-  return `<h2>安全审计</h2>${items}`
+  const note =
+    transitiveHidden > 0
+      ? `<div class="muted" style="margin-top:8px">隐藏了 ${transitiveHidden} 个子依赖漏洞（已归并到优化建议）；--deep 查看全部</div>`
+      : ''
+  return `<h2>安全审计</h2>${items}${note}`
 }
 
 function renderFooter(): string {

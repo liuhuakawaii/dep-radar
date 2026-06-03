@@ -180,7 +180,9 @@ export async function scanCommand(
     }>(cacheKey)
     if (cached) {
       const elapsed = performance.now() - scanStart
-      const rendered = renderReport(cached.report, format)
+      const rendered = renderReport(cached.report, format, {
+        showTransitive: deep,
+      })
       if (output) {
         const content = format === 'terminal' ? stripAnsi(rendered) : rendered
         await writeFile(output, content, 'utf-8')
@@ -422,6 +424,7 @@ export async function scanCommand(
     userReplacements: config.replacements,
     reachabilityResults,
     usageClassMap,
+    inventoryEntries: inventory.entries,
   })
 
   // ============================================================
@@ -484,7 +487,7 @@ export async function scanCommand(
   // ============================================================
   // 6. 输出
   // ============================================================
-  const rendered = renderReport(report, format)
+  const rendered = renderReport(report, format, { showTransitive: deep })
   if (output) {
     try {
       const content = format === 'terminal' ? stripAnsi(rendered) : rendered
