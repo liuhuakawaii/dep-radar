@@ -87,7 +87,7 @@ export async function analyzeBundleSize(
   options: AnalyzeBundleOptions = {},
 ): Promise<BundleAnalysisResult> {
   const {
-    concurrency = 5,
+    concurrency = 15,
     topN = 10,
     ignore = [],
     scope = 'runtime',
@@ -107,6 +107,13 @@ export async function analyzeBundleSize(
   for (const entry of entries) {
     if (isIgnored(entry.name)) {
       skipped.push({ name: entry.name, reason: '被 ignore 配置匹配' })
+      continue
+    }
+
+    // 子依赖不参与体积请求：报告/优化器都不消费 transitive bundle 数据
+    // 仍生成占位条目（保留 isDirect=false 信息），但不发网络请求
+    if (!entry.isDirect) {
+      bundles.push(makeTransitivePlaceholder(entry))
       continue
     }
 
@@ -201,6 +208,32 @@ export async function analyzeBundleSize(
 }
 
 // =====================================================================
+// 占位项构造（子依赖）
+// =====================================================================
+
+/**
+ * 子依赖体积占位条目
+ *
+ * 不发网络请求；体积字段全 0；source='unknown'。
+ * 报告默认隐藏子依赖；--deep 模式下会看到 0 体积+ unknown source，
+ * 用户也能据此知道「子依赖体积默认不分析，需要时用 --deep + --scope all」。
+ */
+function makeTransitivePlaceholder(entry: DependencyEntry): BundleInfo {
+  return {
+    name: entry.name,
+    version: entry.resolvedVersion,
+    resolvedVersion: entry.resolvedVersion,
+    size: 0,
+    gzip: 0,
+    dependencyCount: 0,
+    hasJSModule: false,
+    hasJSNext: false,
+    source: 'unknown',
+    isDirect: false,
+  }
+}
+
+// =====================================================================
 // 旧版兼容入口（接受 PackageJson，内部走 resolveSpec）
 // =====================================================================
 
@@ -215,7 +248,7 @@ export async function analyzeBundleSizeFromPackage(
   options: AnalyzeBundleOptions = {},
 ): Promise<BundleAnalysisResult> {
   const {
-    concurrency = 5,
+    concurrency = 15,
     topN = 10,
     includeDev = false,
     ignore = [],

@@ -95,7 +95,7 @@ export interface DepRadarConfig {
   registry?: string
   /** 缓存 TTL（秒）；默认 3600 */
   cacheTTL?: number
-  /** 并发请求数；默认 5，建议范围 1-20 */
+  /** 并发请求数；默认 15，建议范围 1-20 */
   concurrency?: number
   /**
    * 是否向 Bundlephobia 写入查询记录

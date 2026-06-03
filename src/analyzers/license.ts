@@ -35,10 +35,18 @@ import { buildIgnoreMatcher } from '../utils/ignore.js'
  *
  * fetcher 负责返回原始 license 字符串（兼容 string / {type} / undefined），
  * 由 analyzer 负责后续 SPDX 解析与分类。
+ *
+ * 传入 isDirect 让 fetcher 实现可以做差异化策略：
+ *   - direct：node_modules 读不到时 fallback 到 npm registry
+ *   - transitive：node_modules 读不到时直接返回 undefined（避免大量无意义 registry 请求）
  */
 export interface LicenseFetcher {
   /** 返回原始 license 字符串；包不存在或无 license 字段返回 undefined */
-  getLicense(name: string, version?: string): Promise<string | undefined>
+  getLicense(
+    name: string,
+    version?: string,
+    isDirect?: boolean,
+  ): Promise<string | undefined>
 }
 
 export interface AnalyzeLicensesOptions {
@@ -47,6 +55,8 @@ export interface AnalyzeLicensesOptions {
   includeDev?: boolean
   /** @deprecated 使用 buildIgnoreMatcher 代替 */
   ignore?: string[]
+  /** 每个包完成时的进度回调 */
+  onProgress?: (info: { current: number; total: number; name: string }) => void
 }
 
 export interface LicenseAnalysisResult {
@@ -66,20 +76,27 @@ export async function analyzeLicenses(
   fetcher: LicenseFetcher,
   options: AnalyzeLicensesOptions = {},
 ): Promise<LicenseAnalysisResult> {
-  const { concurrency = 5, ignore = [] } = options
+  const { concurrency = 15, ignore = [], onProgress } = options
 
   const isIgnored = buildIgnoreMatcher(ignore)
   const skipped: LicenseAnalysisResult['skipped'] = []
 
   const targets = entries.filter(e => !isIgnored(e.name))
 
-  const limit = pLimit(concurrency)
+  const limit = pLimit(Math.max(1, concurrency))
+  let completed = 0
+  const total = targets.length
   const results = await Promise.all(
     targets.map(entry =>
       limit(async () => {
         try {
-          return await analyzeOne(entry, fetcher)
+          const result = await analyzeOne(entry, fetcher)
+          completed++
+          onProgress?.({ current: completed, total, name: entry.name })
+          return result
         } catch (err) {
+          completed++
+          onProgress?.({ current: completed, total, name: entry.name })
           skipped.push({
             name: entry.name,
             reason: err instanceof Error ? err.message : String(err),
@@ -92,9 +109,11 @@ export async function analyzeLicenses(
 
   const licenses = results.filter((x): x is LicenseInfo => x !== null)
 
-  // 项目级冲突规则
-  const allCats = licenses.map(l => l.licenseType)
-  const projectConflicts = LICENSE_CONFLICTS.filter(rule => rule.match(allCats))
+  // 项目级冲突规则：只基于直接依赖判断（transitive UNKNOWN 不应触发项目级冲突）
+  const directCats = licenses.filter(l => l.isDirect).map(l => l.licenseType)
+  const projectConflicts = LICENSE_CONFLICTS.filter(rule =>
+    rule.match(directCats),
+  )
 
   return { licenses, projectConflicts, skipped }
 }
@@ -113,7 +132,7 @@ export async function analyzeLicensesFromPackage(
   fetcher: LicenseFetcher,
   options: AnalyzeLicensesOptions = {},
 ): Promise<LicenseAnalysisResult> {
-  const { concurrency = 5, includeDev = false, ignore = [] } = options
+  const { concurrency = 15, includeDev = false, ignore = [] } = options
 
   const deps: Record<string, string> = {
     ...pkg.dependencies,
@@ -125,7 +144,7 @@ export async function analyzeLicensesFromPackage(
 
   const targets = Object.keys(deps).filter(name => !isIgnored(name))
 
-  const limit = pLimit(concurrency)
+  const limit = pLimit(Math.max(1, concurrency))
   const results = await Promise.all(
     targets.map(name =>
       limit(async () => {
@@ -159,7 +178,11 @@ async function analyzeOne(
   entry: DependencyEntry,
   fetcher: LicenseFetcher,
 ): Promise<LicenseInfo> {
-  const raw = await fetcher.getLicense(entry.packageName, entry.resolvedVersion)
+  const raw = await fetcher.getLicense(
+    entry.packageName,
+    entry.resolvedVersion,
+    entry.isDirect,
+  )
   const licenseStr = (raw ?? '').trim()
 
   if (!licenseStr) {

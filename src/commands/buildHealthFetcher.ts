@@ -1,7 +1,7 @@
 /**
  * HealthFetcher 工厂
  *
- * 把 data 层的 4 个原子函数（npm doc / weekly downloads / trend / github）
+ * 把 data 层的原子函数（npm latest manifest / npm meta / download stats / github）
  * 组合为 analyzer 需要的 HealthFetcher 接口；额外职责：
  *
  *   1. GitHub 调用**软失败**：私有仓库、限流、网络异常等情况下返回 null，
@@ -14,9 +14,9 @@ import type { HealthFetcher } from '../analyzers/health.js'
 import type { DataCache } from '../data/cache.js'
 import { getRepoInfo } from '../data/github.js'
 import {
-  getDownloadCount,
-  getDownloadTrend,
-  getFullPackageInfo,
+  getDownloadStats,
+  getPackageInfo,
+  getPackageMeta,
 } from '../data/npm.js'
 import { logger } from '../utils/logger.js'
 
@@ -37,9 +37,9 @@ export function buildHealthFetcher(
 ): HealthFetcher {
   const { cache, registry } = options
   return {
-    getFullDoc: name => getFullPackageInfo(name, cache, registry),
-    getWeeklyDownloads: name => getDownloadCount(name, 'last-week', cache),
-    getTrend: name => getDownloadTrend(name, cache),
+    getLiteDoc: name => getPackageInfo(name, cache, registry),
+    getMeta: name => getPackageMeta(name, cache, registry),
+    getDownloadStats: name => getDownloadStats(name, cache),
     getGitHubRepo: async (owner, repo) => {
       maybeWarnGitHubToken()
       try {

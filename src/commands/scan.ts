@@ -61,6 +61,21 @@ import { buildLicenseFetcher } from './buildLicenseFetcher.js'
 import { createCacheFromGlobals, loadSetup, renderReport } from './shared.js'
 
 // =====================================================================
+// 工具函数
+// =====================================================================
+
+/** 根据已用时间和当前进度估算剩余时间 */
+function formatEta(elapsedMs: number, current: number, total: number): string {
+  if (current === 0) return ''
+  const remainingMs = ((total - current) * elapsedMs) / current
+  const remainingSec = Math.round(remainingMs / 1000)
+  if (remainingSec < 60) return `~${remainingSec}s`
+  const min = Math.floor(remainingSec / 60)
+  const sec = remainingSec % 60
+  return `~${min}m${sec}s`
+}
+
+// =====================================================================
 // 公开类型
 // =====================================================================
 
@@ -213,7 +228,7 @@ export async function scanCommand(
   })
 
   const resolvedRegistry = registry ?? config.registry
-  const resolvedConcurrency = concurrency ?? config.concurrency ?? 5
+  const resolvedConcurrency = concurrency ?? config.concurrency ?? 15
 
   // ============================================================
   // 2. 构建 DependencyInventory
@@ -306,6 +321,7 @@ export async function scanCommand(
   }
 
   const analysisSpinner = ora('正在跑全维度分析...').start()
+  const analysisStart = performance.now()
   let bundles, healthList, licenses, securityResult
   try {
     const bundleP = analyzeBundleSize(
@@ -320,7 +336,12 @@ export async function scanCommand(
         scope,
         ignore: config.ignore,
         onProgress: ({ current, total, name }) => {
-          analysisSpinner.text = `正在分析体积 [${current}/${total}] ${name}...`
+          const eta = formatEta(
+            performance.now() - analysisStart,
+            current,
+            total,
+          )
+          analysisSpinner.text = `正在分析体积 [${current}/${total}] ${name} ${eta}`
         },
       },
     )
@@ -333,7 +354,12 @@ export async function scanCommand(
             concurrency: resolvedConcurrency,
             healthWeights: config.healthWeights,
             onProgress: ({ current, total, name }) => {
-              analysisSpinner.text = `正在分析健康度 [${current}/${total}] ${name}...`
+              const eta = formatEta(
+                performance.now() - analysisStart,
+                current,
+                total,
+              )
+              analysisSpinner.text = `正在分析健康度 [${current}/${total}] ${name} ${eta}`
             },
           },
         )
@@ -346,7 +372,17 @@ export async function scanCommand(
             registry: resolvedRegistry,
             projectPath,
           }),
-          { concurrency: resolvedConcurrency },
+          {
+            concurrency: resolvedConcurrency,
+            onProgress: ({ current, total, name }) => {
+              const eta = formatEta(
+                performance.now() - analysisStart,
+                current,
+                total,
+              )
+              analysisSpinner.text = `正在分析许可证 [${current}/${total}] ${name} ${eta}`
+            },
+          },
         )
     const securityP = skipSecurity
       ? Promise.resolve({

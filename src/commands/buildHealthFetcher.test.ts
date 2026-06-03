@@ -3,9 +3,9 @@ import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NetworkError } from '../errors/index.js'
 
 vi.mock('../data/npm.js', () => ({
-  getFullPackageInfo: vi.fn(),
-  getDownloadCount: vi.fn(),
-  getDownloadTrend: vi.fn(),
+  getPackageInfo: vi.fn(),
+  getPackageMeta: vi.fn(),
+  getDownloadStats: vi.fn(),
 }))
 
 vi.mock('../data/github.js', () => ({
@@ -23,16 +23,16 @@ vi.mock('../utils/logger.js', () => ({
   setLogLevel: vi.fn(),
 }))
 
-const { getFullPackageInfo, getDownloadCount, getDownloadTrend } =
+const { getPackageInfo, getPackageMeta, getDownloadStats } =
   await import('../data/npm.js')
 const { getRepoInfo } = await import('../data/github.js')
 const { logger } = await import('../utils/logger.js')
 const { buildHealthFetcher, _resetGithubTokenWarnedForTests } =
   await import('./buildHealthFetcher.js')
 
-const fullDoc = getFullPackageInfo as unknown as ReturnType<typeof vi.fn>
-const dlCount = getDownloadCount as unknown as ReturnType<typeof vi.fn>
-const trend = getDownloadTrend as unknown as ReturnType<typeof vi.fn>
+const liteDoc = getPackageInfo as unknown as ReturnType<typeof vi.fn>
+const meta = getPackageMeta as unknown as ReturnType<typeof vi.fn>
+const dlStats = getDownloadStats as unknown as ReturnType<typeof vi.fn>
 const repoInfo = getRepoInfo as unknown as ReturnType<typeof vi.fn>
 const warn = logger.warn as unknown as ReturnType<typeof vi.fn>
 
@@ -48,34 +48,48 @@ afterAll(() => {
 
 describe('buildHealthFetcher', () => {
   beforeEach(() => {
-    fullDoc.mockReset()
-    dlCount.mockReset()
-    trend.mockReset()
+    liteDoc.mockReset()
+    meta.mockReset()
+    dlStats.mockReset()
     repoInfo.mockReset()
     warn.mockReset()
     delete process.env.GITHUB_TOKEN
     _resetGithubTokenWarnedForTests()
   })
 
-  it('getFullDoc 应代理到 npm.getFullPackageInfo', async () => {
-    fullDoc.mockResolvedValueOnce({ name: 'react' })
+  it('getMeta 应代理到 npm.getPackageMeta', async () => {
+    meta.mockResolvedValueOnce({
+      'dist-tags': { latest: '18.3.1' },
+      maintainers: [],
+    })
     const f = buildHealthFetcher()
-    const got = await f.getFullDoc('react')
-    expect(got).toEqual({ name: 'react' })
-    expect(fullDoc).toHaveBeenCalledWith('react', undefined, undefined)
+    const got = await f.getMeta('react')
+    expect(got).toEqual({ 'dist-tags': { latest: '18.3.1' }, maintainers: [] })
+    expect(meta).toHaveBeenCalledWith('react', undefined, undefined)
   })
 
-  it('getWeeklyDownloads 应使用 last-week 周期', async () => {
-    dlCount.mockResolvedValueOnce(123)
+  it('getLiteDoc 应代理到 npm.getPackageInfo', async () => {
+    liteDoc.mockResolvedValueOnce({
+      name: 'react',
+      version: '18.3.1',
+      deprecated: undefined,
+    })
     const f = buildHealthFetcher()
-    await f.getWeeklyDownloads('react')
-    expect(dlCount).toHaveBeenCalledWith('react', 'last-week', undefined)
+    const got = await f.getLiteDoc('react')
+    expect(got).toEqual({
+      name: 'react',
+      version: '18.3.1',
+      deprecated: undefined,
+    })
+    expect(liteDoc).toHaveBeenCalledWith('react', undefined, undefined)
   })
 
-  it('getTrend 应代理到 npm.getDownloadTrend', async () => {
-    trend.mockResolvedValueOnce('up')
+  it('getDownloadStats 应代理到 npm.getDownloadStats', async () => {
+    dlStats.mockResolvedValueOnce({ weekly: 500_000, trend: 'up' })
     const f = buildHealthFetcher()
-    expect(await f.getTrend('react')).toBe('up')
+    const got = await f.getDownloadStats('react')
+    expect(got).toEqual({ weekly: 500_000, trend: 'up' })
+    expect(dlStats).toHaveBeenCalledWith('react', undefined)
   })
 
   it('getGitHubRepo 成功路径直接返回数据', async () => {

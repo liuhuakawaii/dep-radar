@@ -1,6 +1,6 @@
 {
   "name": "@liuhuakawaii/dep-radar",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "前端依赖雷达 — 一站式依赖分析与优化建议 CLI 工具",
   "type": "module",
   "packageManager": "pnpm@10.18.3",

@@ -80,6 +80,6 @@ export async function getRepoInfo(
     }
   }
 
-  if (cache) return cache.withCache(`github:${owner}/${repo}`, fetchFn)
+  if (cache) return cache.withCacheOrError(`github:${owner}/${repo}`, fetchFn)
   return fetchFn()
 }

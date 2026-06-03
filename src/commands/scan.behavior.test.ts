@@ -21,11 +21,12 @@ process.env.FORCE_COLOR = '0'
 vi.mock('../data/pkg-size.js', () => ({ getPackageSize: vi.fn() }))
 vi.mock('../data/bundlephobia.js', () => ({ getPackageSize: vi.fn() }))
 vi.mock('../data/npm.js', () => ({
-  getFullPackageInfo: vi.fn(),
   getPackageInfo: vi.fn(),
+  getPackageMeta: vi.fn(),
   getPackageVersionInfo: vi.fn(),
   getDownloadCount: vi.fn(),
   getDownloadTrend: vi.fn(),
+  getDownloadStats: vi.fn(),
 }))
 vi.mock('../data/github.js', () => ({
   getRepoInfo: vi.fn(),
@@ -34,10 +35,11 @@ vi.mock('../data/github.js', () => ({
 
 const { getPackageSize } = await import('../data/pkg-size.js')
 const {
-  getFullPackageInfo,
   getPackageInfo,
+  getPackageMeta,
   getDownloadCount,
   getDownloadTrend,
+  getDownloadStats,
 } = await import('../data/npm.js')
 const { getRepoInfo, parseGitHubUrl } = await import('../data/github.js')
 const { _resetGithubTokenWarnedForTests } =
@@ -46,10 +48,11 @@ const { scanCommand } = await import('./scan.js')
 const { EXIT_CODES } = await import('../utils/exitCode.js')
 
 const pkgSize = getPackageSize as unknown as ReturnType<typeof vi.fn>
-const npmFullDoc = getFullPackageInfo as unknown as ReturnType<typeof vi.fn>
 const npmInfo = getPackageInfo as unknown as ReturnType<typeof vi.fn>
+const npmMeta = getPackageMeta as unknown as ReturnType<typeof vi.fn>
 const npmDl = getDownloadCount as unknown as ReturnType<typeof vi.fn>
 const npmTrend = getDownloadTrend as unknown as ReturnType<typeof vi.fn>
+const npmDlStats = getDownloadStats as unknown as ReturnType<typeof vi.fn>
 const ghRepo = getRepoInfo as unknown as ReturnType<typeof vi.fn>
 const parseGH = parseGitHubUrl as unknown as ReturnType<typeof vi.fn>
 
@@ -58,10 +61,11 @@ describe('scan 行为测试', () => {
 
   beforeEach(() => {
     pkgSize.mockReset()
-    npmFullDoc.mockReset()
     npmInfo.mockReset()
+    npmMeta.mockReset()
     npmDl.mockReset()
     npmTrend.mockReset()
+    npmDlStats.mockReset()
     ghRepo.mockReset()
     parseGH.mockReset()
     _resetGithubTokenWarnedForTests()
@@ -91,15 +95,19 @@ describe('scan 行为测试', () => {
   }
 
   function mockHealthy(name: string) {
-    npmFullDoc.mockImplementation(async (n: string) => ({
+    npmInfo.mockImplementation(async (n: string) => ({
       name: n,
+      version: '1.0.0',
+      types: './i.d.ts',
+    }))
+    npmMeta.mockResolvedValue({
       'dist-tags': { latest: '1.0.0' },
-      versions: { '1.0.0': { name: n, version: '1.0.0', types: './i.d.ts' } },
       time: { '1.0.0': new Date().toISOString() },
       maintainers: [{ name: 'a' }, { name: 'b' }, { name: 'c' }, { name: 'd' }],
-    }))
+    })
     npmDl.mockResolvedValue(500_000)
     npmTrend.mockResolvedValue('up')
+    npmDlStats.mockResolvedValue({ weekly: 500_000, trend: 'up' })
     ghRepo.mockResolvedValue(null)
     parseGH.mockReturnValue(null)
     return name
@@ -339,24 +347,22 @@ describe('scan 行为测试', () => {
       hasJSNext: false,
       source: 'pkg-size',
     })
-    npmFullDoc.mockImplementation(async (n: string) => ({
+    npmInfo.mockImplementation(async (n: string) => ({
       name: n,
+      version: '1.0.0',
+      deprecated: '包已废弃',
+      license: 'MIT',
+    }))
+    npmMeta.mockResolvedValue({
       'dist-tags': { latest: '1.0.0' },
-      versions: {
-        '1.0.0': { name: n, version: '1.0.0', deprecated: '包已废弃' },
-      },
       time: { '1.0.0': new Date().toISOString() },
       maintainers: [{ name: 'a' }],
-    }))
+    })
     npmDl.mockResolvedValue(100)
     npmTrend.mockResolvedValue('down')
+    npmDlStats.mockResolvedValue({ weekly: 100, trend: 'down' })
     ghRepo.mockResolvedValue(null)
     parseGH.mockReturnValue(null)
-    npmInfo.mockResolvedValue({
-      name: 'old-pkg',
-      version: '1.0.0',
-      license: 'MIT',
-    })
 
     const code = await scanCommand(dir, {
       format: 'json',
