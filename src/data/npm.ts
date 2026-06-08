@@ -17,6 +17,7 @@ import type {
   NpmDownloadsRangeResponse,
   NpmDownloadsResponse,
   NpmFullDocResponse,
+  NpmPackageMetaResponse,
   NpmRegistryResponse,
 } from '../types/api.js'
 import type { DataCache } from './cache.js'
@@ -59,7 +60,7 @@ export async function getPackageInfo(
       ),
     )
 
-  if (cache) return cache.withCache(`npm-info:${name}`, fetchFn)
+  if (cache) return cache.withCacheOrError(`npm-info:${name}`, fetchFn)
   return fetchFn()
 }
 
@@ -85,7 +86,7 @@ export async function getPackageVersionInfo(
       ),
     )
 
-  if (cache) return cache.withCache(cacheKey, fetchFn)
+  if (cache) return cache.withCacheOrError(cacheKey, fetchFn)
   return fetchFn()
 }
 
@@ -108,7 +109,36 @@ export async function getFullPackageInfo(
       fetchJson<NpmFullDocResponse>(`${baseUrl}/${encodeURIComponent(name)}`),
     )
 
-  if (cache) return cache.withCache(`npm-full:${name}`, fetchFn)
+  if (cache) return cache.withCacheOrError(`npm-full:${name}`, fetchFn)
+  return fetchFn()
+}
+
+/**
+ * 拉取包的轻量元数据（time + maintainers + dist-tags + repository）
+ *
+ * 利用 npm registry 的 ?field= 查询参数，只返回指定字段，
+ * 避免拉取完整的 versions map（热门包可达数 MB）。
+ *
+ * 与 getPackageInfo（/latest manifest）配合使用：
+ * - getPackageInfo → deprecated / types / typings / repository
+ * - getPackageMeta → time / maintainers / dist-tags
+ */
+export async function getPackageMeta(
+  name: string,
+  cache?: DataCache,
+  registry?: string,
+): Promise<NpmPackageMetaResponse> {
+  const baseUrl = registry ?? DEFAULT_REGISTRY_URL
+  const fields = ['time', 'maintainers', 'dist-tags', 'repository']
+  const query = fields.map(f => `field=${f}`).join('&')
+  const fetchFn = (): Promise<NpmPackageMetaResponse> =>
+    withNotFound(name, () =>
+      fetchJson<NpmPackageMetaResponse>(
+        `${baseUrl}/${encodeURIComponent(name)}?${query}`,
+      ),
+    )
+
+  if (cache) return cache.withCacheOrError(`npm-meta:${name}`, fetchFn)
   return fetchFn()
 }
 
@@ -131,7 +161,7 @@ export async function getDownloadCount(
     return res.downloads
   }
 
-  if (cache) return cache.withCache(`npm-dl:${period}:${name}`, fetchFn)
+  if (cache) return cache.withCacheOrError(`npm-dl:${period}:${name}`, fetchFn)
   return fetchFn()
 }
 
@@ -142,12 +172,16 @@ export async function getDownloadCount(
  */
 export async function getDownloadRange(
   name: string,
+  cache?: DataCache,
 ): Promise<NpmDownloadsRangeResponse> {
-  return withNotFound(name, () =>
-    fetchJson<NpmDownloadsRangeResponse>(
-      `${DOWNLOADS_URL}/range/last-month/${encodeURIComponent(name)}`,
-    ),
-  )
+  const fetchFn = (): Promise<NpmDownloadsRangeResponse> =>
+    withNotFound(name, () =>
+      fetchJson<NpmDownloadsRangeResponse>(
+        `${DOWNLOADS_URL}/range/last-month/${encodeURIComponent(name)}`,
+      ),
+    )
+  if (cache) return cache.withCacheOrError(`npm-range:${name}`, fetchFn)
+  return fetchFn()
 }
 
 /**
@@ -159,29 +193,52 @@ export async function getDownloadRange(
  * - 其余 → 'stable'
  *
  * 数据点不足 14 天时（新包）一律返回 'stable'，避免误报。
+ *
+ * @deprecated 优先使用 getDownloadStats，可一次性返回 weekly + trend。
  */
 export async function getDownloadTrend(
   name: string,
   cache?: DataCache,
 ): Promise<'up' | 'down' | 'stable'> {
-  const fetchFn = async (): Promise<'up' | 'down' | 'stable'> => {
-    const res = await getDownloadRange(name)
-    const days = res.downloads
-    if (days.length < 14) return 'stable'
+  const stats = await getDownloadStats(name, cache)
+  return stats.trend
+}
 
+/**
+ * 同时返回周下载量与下载量趋势（共享 last-month range 数据）
+ *
+ * 用一次 range 请求替代以前的「last-week + last-month range」两次请求。
+ * weekly 取 range 后 7 天的总和。
+ */
+export async function getDownloadStats(
+  name: string,
+  cache?: DataCache,
+): Promise<{ weekly: number; trend: 'up' | 'down' | 'stable' }> {
+  const res = await getDownloadRange(name, cache)
+  const days = res.downloads
+
+  // weekly：取末尾最多 7 天的总和（缺数据点也兼容）
+  const tailLen = Math.min(7, days.length)
+  let weekly = 0
+  for (let i = days.length - tailLen; i < days.length; i++) {
+    weekly += days[i]!.downloads
+  }
+
+  // trend：与原算法一致，但走共享 range
+  let trend: 'up' | 'down' | 'stable' = 'stable'
+  if (days.length >= 14) {
     const mid = Math.floor(days.length / 2)
     const firstHalf = days.slice(0, mid).reduce((s, d) => s + d.downloads, 0)
     const secondHalf = days.slice(mid).reduce((s, d) => s + d.downloads, 0)
-
-    // 前半月为 0（如新包或异常）时，直接看后半月是否有下载
-    if (firstHalf === 0) return secondHalf > 0 ? 'up' : 'stable'
-
-    const ratio = secondHalf / firstHalf
-    if (ratio > 1.1) return 'up'
-    if (ratio < 0.9) return 'down'
-    return 'stable'
+    if (firstHalf === 0) {
+      trend = secondHalf > 0 ? 'up' : 'stable'
+    } else {
+      const ratio = secondHalf / firstHalf
+      if (ratio > 1.1) trend = 'up'
+      else if (ratio < 0.9) trend = 'down'
+      else trend = 'stable'
+    }
   }
 
-  if (cache) return cache.withCache(`npm-trend:${name}`, fetchFn)
-  return fetchFn()
+  return { weekly, trend }
 }

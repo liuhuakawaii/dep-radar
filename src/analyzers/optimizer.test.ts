@@ -6,8 +6,26 @@ import type {
   LicenseInfo,
   SecurityInfo,
 } from '../types/analysis.js'
+import type { DependencyEntry } from '../types/inventory.js'
 
 import { generateOptimizations, type OptimizerInput } from './optimizer.js'
+
+// 构造 inventory entry（默认是 transitive）
+function entry(over: Partial<DependencyEntry> = {}): DependencyEntry {
+  return {
+    name: 'pkg',
+    packageName: 'pkg',
+    requestedSpec: 'transitive:pkg',
+    resolvedVersion: '1.0.0',
+    declaredIn: 'transitive',
+    isDirect: false,
+    isAlias: false,
+    resolvedFrom: 'pnpm-lock.yaml',
+    confidence: 'high',
+    paths: [['root-dep', 'pkg']],
+    ...over,
+  }
+}
 
 // =====================================================================
 // 工厂
@@ -23,6 +41,7 @@ function bundle(over: Partial<BundleInfo> = {}): BundleInfo {
     hasJSModule: true,
     hasJSNext: false,
     source: 'pkg-size',
+    isDirect: true,
     ...over,
   }
 }
@@ -38,6 +57,7 @@ function health(over: Partial<HealthInfo> = {}): HealthInfo {
     deprecated: false,
     hasTypeScriptTypes: false,
     healthScore: 50,
+    isDirect: true,
     ...over,
   }
 }
@@ -48,6 +68,7 @@ function license(over: Partial<LicenseInfo> = {}): LicenseInfo {
     license: 'MIT',
     licenseType: 'permissive',
     risk: 'low',
+    isDirect: true,
     ...over,
   }
 }
@@ -360,5 +381,300 @@ describe('generateOptimizations', () => {
     // 这里 health.name = 'moment' 满足 isInDeps
     expect(out).toHaveLength(1)
     expect(out[0]!.estimatedSavings).toBe(0)
+  })
+
+  // =====================================================================
+  // 直接依赖中心化：子依赖问题正确归并
+  // =====================================================================
+
+  describe('子依赖归并到父直接依赖', () => {
+    it('子依赖的 deprecated 应作为父直接依赖的 caveats/evidence，而不单独成条', () => {
+      const out = generateOptimizations(
+        input({
+          inventoryEntries: [
+            entry({
+              name: 'react',
+              packageName: 'react',
+              isDirect: true,
+              paths: [['react']],
+              declaredIn: 'dependencies',
+            }),
+            entry({
+              name: 'old-thing',
+              packageName: 'old-thing',
+              isDirect: false,
+              paths: [['react', 'old-thing']],
+            }),
+          ],
+          // react 自己是 deprecated，触发规则 1
+          health: [
+            health({
+              name: 'react',
+              isDirect: true,
+              deprecated: true,
+              deprecatedMessage: 'react 已过时',
+            }),
+            health({
+              name: 'old-thing',
+              isDirect: false,
+              deprecated: true,
+              deprecatedMessage: 'old-thing 已停止维护',
+            }),
+          ],
+        }),
+      )
+      // 只对直接依赖 react 产出一条建议
+      expect(out).toHaveLength(1)
+      expect(out[0]!.packageName).toBe('react')
+      // 父依赖建议中带子依赖问题摘要
+      expect(out[0]!.description).toContain('其子依赖存在 1 个问题')
+      // caveats 包含路径
+      const caveats = out[0]!.caveats ?? []
+      expect(caveats.some(c => c.includes('react > old-thing'))).toBe(true)
+      expect(caveats.some(c => c.includes('old-thing'))).toBe(true)
+      // evidence 中有 transitive-dep 来源
+      const ev = out[0]!.evidence ?? []
+      expect(ev.some(e => e.source === 'transitive-dep')).toBe(true)
+    })
+
+    it('父依赖自身无问题 + 子依赖高危漏洞 → 合成 upgrade 建议（规则 7）', () => {
+      const out = generateOptimizations(
+        input({
+          inventoryEntries: [
+            entry({
+              name: 'express',
+              packageName: 'express',
+              isDirect: true,
+              paths: [['express']],
+              declaredIn: 'dependencies',
+            }),
+            entry({
+              name: 'vuln-pkg',
+              packageName: 'vuln-pkg',
+              isDirect: false,
+              paths: [['express', 'middleware', 'vuln-pkg']],
+            }),
+          ],
+          security: [
+            security({
+              name: 'vuln-pkg',
+              isDirect: false,
+              totalVulnerabilities: 1,
+              highestSeverity: 'high',
+              vulnerabilities: [
+                {
+                  severity: 'high',
+                  title: 'RCE',
+                  url: '',
+                  fixAvailable: false,
+                },
+              ],
+            }),
+          ],
+        }),
+      )
+      // 应该合成一条对 express 的 upgrade 建议
+      expect(out).toHaveLength(1)
+      expect(out[0]!.packageName).toBe('express')
+      expect(out[0]!.type).toBe('upgrade')
+      expect(out[0]!.priority).toBe('high')
+      const caveats = out[0]!.caveats ?? []
+      expect(
+        caveats.some(c => c.includes('express > middleware > vuln-pkg')),
+      ).toBe(true)
+    })
+
+    it('子依赖只有体积大 / 健康度低 → 不传染父依赖（不生成任何建议）', () => {
+      const out = generateOptimizations(
+        input({
+          inventoryEntries: [
+            entry({
+              name: 'good-direct',
+              packageName: 'good-direct',
+              isDirect: true,
+              paths: [['good-direct']],
+              declaredIn: 'dependencies',
+            }),
+            entry({
+              name: 'fat-transitive',
+              packageName: 'fat-transitive',
+              isDirect: false,
+              paths: [['good-direct', 'fat-transitive']],
+            }),
+            entry({
+              name: 'unhealthy-transitive',
+              packageName: 'unhealthy-transitive',
+              isDirect: false,
+              paths: [['good-direct', 'unhealthy-transitive']],
+            }),
+          ],
+          bundles: [
+            // direct 自己体积正常
+            bundle({ name: 'good-direct', gzip: 1000, isDirect: true }),
+            // transitive 巨大，应被忽略
+            bundle({
+              name: 'fat-transitive',
+              gzip: 500_000,
+              isDirect: false,
+            }),
+          ],
+          health: [
+            health({ name: 'good-direct', isDirect: true, healthScore: 80 }),
+            health({
+              name: 'unhealthy-transitive',
+              isDirect: false,
+              healthScore: 5,
+            }),
+          ],
+        }),
+      )
+      expect(out).toHaveLength(0)
+    })
+
+    it('未提供 inventoryEntries 时，子依赖问题不会传染（安全降级）', () => {
+      const out = generateOptimizations(
+        input({
+          health: [
+            health({
+              name: 'good-direct',
+              isDirect: true,
+              healthScore: 80,
+            }),
+            health({
+              name: 'deprecated-trans',
+              isDirect: false,
+              deprecated: true,
+            }),
+          ],
+        }),
+      )
+      // 没有 inventoryEntries，规则 7 也不会触发
+      expect(out).toHaveLength(0)
+    })
+
+    it('多个直接依赖共同引入同一子依赖时，问题挂到每个父依赖', () => {
+      const out = generateOptimizations(
+        input({
+          inventoryEntries: [
+            entry({
+              name: 'a',
+              packageName: 'a',
+              isDirect: true,
+              paths: [['a']],
+              declaredIn: 'dependencies',
+            }),
+            entry({
+              name: 'b',
+              packageName: 'b',
+              isDirect: true,
+              paths: [['b']],
+              declaredIn: 'dependencies',
+            }),
+            // shared 通过 a 和 b 两条路径都能到达
+            entry({
+              name: 'shared',
+              packageName: 'shared',
+              isDirect: false,
+              paths: [
+                ['a', 'shared'],
+                ['b', 'shared'],
+              ],
+            }),
+          ],
+          security: [
+            security({
+              name: 'shared',
+              isDirect: false,
+              totalVulnerabilities: 1,
+              highestSeverity: 'critical',
+              vulnerabilities: [
+                {
+                  severity: 'critical',
+                  title: 'X',
+                  url: '',
+                  fixAvailable: false,
+                },
+              ],
+            }),
+          ],
+        }),
+      )
+      const names = out.map(o => o.packageName).sort()
+      expect(names).toEqual(['a', 'b'])
+      // 两条都是合成的 upgrade
+      expect(out.every(o => o.type === 'upgrade')).toBe(true)
+    })
+
+    it('父依赖在规则 1-6 中已命中时，规则 7 不再为它合成', () => {
+      const out = generateOptimizations(
+        input({
+          inventoryEntries: [
+            entry({
+              name: 'moment',
+              packageName: 'moment',
+              isDirect: true,
+              paths: [['moment']],
+              declaredIn: 'dependencies',
+            }),
+            entry({
+              name: 'sub',
+              packageName: 'sub',
+              isDirect: false,
+              paths: [['moment', 'sub']],
+            }),
+          ],
+          bundles: [bundle({ name: 'moment', gzip: 70_000, isDirect: true })],
+          security: [
+            security({
+              name: 'sub',
+              isDirect: false,
+              totalVulnerabilities: 1,
+              highestSeverity: 'high',
+              vulnerabilities: [
+                {
+                  severity: 'high',
+                  title: 'X',
+                  url: '',
+                  fixAvailable: false,
+                },
+              ],
+            }),
+          ],
+        }),
+      )
+      expect(out).toHaveLength(1)
+      // 规则 2 命中 moment，type 应该是 replace 而不是合成的 upgrade
+      expect(out[0]!.packageName).toBe('moment')
+      expect(out[0]!.type).toBe('replace')
+      // 子依赖问题已合入 caveats
+      expect(out[0]!.caveats?.some(c => c.includes('sub'))).toBe(true)
+    })
+
+    it('只对直接依赖出建议：transitive 自身永远不会单独出条目', () => {
+      const out = generateOptimizations(
+        input({
+          inventoryEntries: [
+            entry({
+              name: 'root',
+              packageName: 'root',
+              isDirect: true,
+              paths: [['root']],
+              declaredIn: 'dependencies',
+            }),
+          ],
+          // jquery 不在 inventoryEntries 中（说明无父归集），也不是直接依赖
+          health: [
+            health({
+              name: 'jquery',
+              isDirect: false,
+              deprecated: true,
+              deprecatedMessage: 'jquery deprecated',
+            }),
+          ],
+          bundles: [bundle({ name: 'jquery', gzip: 30_000, isDirect: false })],
+        }),
+      )
+      expect(out.find(o => o.packageName === 'jquery')).toBeUndefined()
+    })
   })
 })

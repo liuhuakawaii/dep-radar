@@ -167,7 +167,32 @@ export default defineConfig({
 
 **功能：** 将四大分析维度的结果聚合为可操作的优化建议。
 
-**六条规则（按优先级从高到低）：**
+**核心设计原则：以直接依赖为中心**
+
+- **只对直接依赖生成优化建议**，不对子依赖单独生成建议
+- 子依赖的问题按类型分级归并到引入它的**直接依赖**上
+- 父依赖归并通过 `inventory.entries[].paths[0][0]` 精确定位（不再是把每个子依赖问题挂到所有直接依赖的桩实现）
+
+**为什么这样设计？**
+
+子依赖（如 jquery、@babel/plugin-proposal-class-properties）通常无法直接操作——用户不能直接卸载或替换它们。如果子依赖有问题，正确的方式是：
+
+1. 升级引入该子依赖的直接依赖到新版本
+2. 或者替换直接依赖为其他方案
+
+**子依赖问题分级（决定是否传染父依赖）：**
+
+| 子依赖问题类型           | 是否传染父直接依赖          |
+| ------------------------ | --------------------------- |
+| Deprecated               | ✅ 作为父依赖建议的 caveats |
+| 高危 / Critical 安全漏洞 | ✅ 作为父依赖建议的 caveats |
+| 高风险许可证             | ✅ 作为父依赖建议的 caveats |
+| 体积大                   | ❌ 父依赖也无能为力，不传染 |
+| 健康度低                 | ❌ 父依赖也无能为力，不传染 |
+
+体积和健康度不传染的理由：父依赖选择引入它就是为了它的功能，父依赖既无法替换它也无法 tree-shake 掉，告知父依赖也不构成可操作信号；继续传染只是噪音。
+
+**七条规则（按优先级从高到低，全部仅作用于直接依赖）：**
 
 1. **Deprecated 包**（type=deprecated, priority=high）— 已废弃包直接标红
 2. **命中内置替代方案表**（type=replace）— 与内置 REPLACEMENTS 表匹配
@@ -175,12 +200,27 @@ export default defineConfig({
 4. **健康度过低**（type=replace）— healthScore < 30，附带低分原因说明
 5. **许可证高风险**（type=replace）— license risk = high
 6. **高危漏洞无修复**（type=replace）— high/critical 级别漏洞且 fixAvailable = false
+7. **（合成）子依赖触发**（type=upgrade）— 父依赖自身未命中 1-6 但拉入了 actionable 子依赖问题；priority 由子依赖最高严重度决定，建议升级或评估替换父依赖
+
+**子依赖问题在建议中的展示：**
+
+每条 caveats 和 evidence 都带上完整祖先链（`react > some-pkg > jquery`），方便用户定位：
+
+```text
+● some-direct-dependency [deprecated] [high] [ready]
+  该包已被作者标记为 deprecated；其子依赖存在 2 个问题
+  caveats:
+    - 子依赖 some-transitive-dep（deprecated，路径: some-direct-dependency > some-transitive-dep）: 该包已被标记为 deprecated
+    - 子依赖 another-transitive-dep（security，路径: some-direct-dependency > intermediate > another-transitive-dep）: 存在 1 个 high 级别漏洞
+```
+
+**降级行为：** 若调用 `generateOptimizations` 时未提供 `inventoryEntries`，子依赖问题不会被传染（避免给所有直接依赖错误地堆 caveats）。scan 命令默认会传入完整 inventory。
 
 **同包去重策略：**
 
 - 按 packageName 聚合，取最严重的一条
 - description 累积（用 `;` 连接），避免信息丢失
-- type 优先级：deprecated > replace > remove > upgrade > tree-shake/import-style
+- type 优先级：deprecated > replace > upgrade ≈ remove > tree-shake/import-style
 
 **排序算法：**
 
@@ -305,20 +345,18 @@ export default defineConfig({
 **流程：**
 
 1. 加载配置（cosmiconfig）→ 读 package.json → 检测包管理器
-2. 构建 DependencyInventory（从 lockfile / node_modules），默认只保留生产根依赖及其可达传递依赖
+2. 构建 DependencyInventory（从 lockfile / node_modules）
 3. 源码可达性分析 + 依赖分类
-4. 默认模式选取直接依赖作为 analyzer 目标；`--deep` 使用完整 lock entries
-5. **并行**跑四个 analyzer（bundle + health + license + security）
-6. 依赖卫生检测 + 多版本检测 + 优化建议生成
-7. 默认模式过滤：只保留 actionable findings
-8. 汇总 diagnostics（skipped / warnings）+ 渲染报告 + 决定退出码
+4. **并行**跑四个 analyzer（bundle + health + license + security）
+5. 依赖卫生检测 + 多版本检测 + 优化建议生成
+6. 默认模式过滤：只保留 actionable findings
+7. 汇总 diagnostics（skipped / warnings）+ 渲染报告 + 决定退出码
 
 **模式：**
 
-- **默认模式**：快速扫描直接依赖，只输出可操作建议；transitive 信息保留在 inventory 中作为证据
-- **`--include-dev`**：将 `devDependencies` 及其可达传递依赖纳入清单和分析目标
-- **`--deep` 模式**：完整 lock 文件扫描，等同原 optimize 行为
-- **`--ci` 模式**：只对 direct prod critical/high 漏洞和高风险许可证冲突返回非零
+- **默认模式**：以直接依赖为中心。bundle/health/license/security 表格只展示直接依赖；子依赖的 actionable 问题（deprecated/高危漏洞/高风险许可证）以 caveats + evidence 形式归并到引入它的直接依赖建议中；只保留 actionable findings。
+- **`--deep` 模式**：在 bundle/health/license/security 表格中**同时**展示子依赖，便于排查。优化建议依然遵循「以直接依赖为中心」，不会单独对子依赖产出建议。
+- **`--ci` 模式**：只对 direct prod critical/high 漏洞和高风险许可证冲突返回非零。
 
 **数据完整性：** 报告包含 `diagnostics.partial`、`diagnostics.skipped` 和 `diagnostics.warnings`。当 audit、网络数据源或构建产物分析失败，或用户通过 `--skip-health` / `--skip-license` / `--skip-security` 显式跳过维度时，报告会明确标记为部分结果，而不是展示为“未发现问题”。
 
@@ -327,7 +365,7 @@ export default defineConfig({
 - `--format` 仅接受命令声明的枚举值，非法值返回退出码 1
 - `--scope` 仅接受 `runtime` / `all` / `non-runtime`
 - `--concurrency` 和 `config.concurrency` 必须是 1-20 之间的整数
-- `--all-workspaces` 当前仅支持 terminal 输出；JSON/HTML/Markdown 聚合报告尚未实现，且不支持 `--output`，避免多个 workspace 覆盖同一个文件或拼出不可解析 JSON
+- `--all-workspaces` 当前仅支持 terminal 输出；JSON/HTML/Markdown 聚合报告尚未实现，且不支持 `--output`
 
 **退出码规则：**
 
@@ -352,7 +390,7 @@ export default defineConfig({
 - 是否可移除/移动/升级
 - 操作命令建议（如 `pnpm remove X`）
 
-**流程：** 跑完整 inventory + reachability + classification pipeline → 筛选目标包 → 输出单包报告。默认只解释生产依赖和传递依赖；传入 `--include-dev` 后才纳入 `devDependencies`，避免日常排查时被测试/构建工具噪声干扰。
+**流程：** 跑完整 inventory + reachability + classification pipeline → 筛选目标包 → 输出单包报告。
 
 ### 5.3 `doctor` 命令 (`src/commands/doctor.ts`)
 
@@ -380,7 +418,7 @@ export default defineConfig({
 **CLI 选项（scan）：**
 
 - `--workspace <name>`：分析指定子包（按 name 或 path 匹配）
-- `--all-workspaces`：逐个分析所有子包，退出码取最严重的；当前仅支持 terminal 输出，不生成聚合 JSON/HTML/Markdown
+- `--all-workspaces`：逐个分析所有子包，退出码取最严重的；当前仅支持 terminal 输出，不生成聚合 JSON/HTML/Markdown，且不支持 `--output`
 
 **实现：** `src/utils/workspace.ts` — `detectWorkspaces()` 检测并展开 glob 模式，`findWorkspace()` 按名称/路径查找。
 
@@ -406,24 +444,25 @@ dep-radar scan --since main
 - 彩色 ANSI 输出，使用 chalk + cli-table3 + boxen
 - **Header**：圆角边框卡片，显示项目名、时间、包管理器
 - **Summary**：概览区显示依赖总数、总体积（minified + gzip）、废弃数、许可证问题数、漏洞数、优化建议数
-- **Bundle 表格**：包名、版本、gzip、占比、来源（彩色标记 pkg-size/bundlephobia/local/unknown）
-- **Health 表格**：包名、健康度分数（绿/黄/红色）、周下载、最近发布、废弃状态、TS 类型支持
-- **License 表格**：仅显示风险不为 low 的包，含许可证、类型、风险等级、冲突说明
-- **Security 列表**：按严重度着色的漏洞列表，显示最高 3 条 + 省略提示
-- **Optimization 列表**：按优先级 + 预估节省量排序，含替代方案、难度、破坏性、注意事项、迁移指南
+- **Diagnostics**：当任一维度被跳过或部分失败时展示数据完整性提示，避免把部分结果误读为无风险
+- **Bundle 表格**：包名、版本、gzip、占比、来源（彩色标记 pkg-size/bundlephobia/local/unknown）。**默认只展示直接依赖**；隐藏的子依赖数会作为脚注提示。`--deep`/`showTransitive` 时显示全部。
+- **Health 表格**：包名、健康度分数（绿/黄/红色）、周下载、最近发布、废弃状态、TS 类型支持。**默认只展示直接依赖**。
+- **License 表格**：仅展示直接依赖中风险不为 low 的包；`--deep` 模式下可同时展示子依赖。
+- **Security 列表**：默认只展示直接依赖漏洞；子依赖漏洞已归并到优化建议中，列表底部提示隐藏数。`--deep` 模式下显示所有漏洞。
+- **Optimization 列表**：按优先级 + 预估节省量排序。每条建议自身已是直接依赖维度；子依赖问题以 caveats / evidence（带完整祖先路径）出现在父依赖建议中。
+- **推荐操作**：仅推荐直接依赖的可执行操作（如 `npm audit fix` 仅在直接依赖漏洞 fixAvailable 时出现）。
 
 ### 6.2 JSON 报告 (`src/report/json.ts`)
 
 - 直接 `JSON.stringify(AnalysisReport, null, 2)`
+- **不做直接/子依赖过滤**，总是输出全量原始数据，由消费者按需筛选（每条目均有 `isDirect` 字段）
 - 适用于 CI 集成（被其他工具读取）
 
 ### 6.3 Markdown 报告 (`src/report/markdown.ts`)
 
 - 标准 Markdown 表格语法，适合嵌入 GitHub PR description 或 README
 - 各维度独立表格：体积、健康度、许可证、安全审计
-- 健康度表格：分数、周下载量、最近发布时间（相对时间）、趋势、TS 类型、废弃状态
-- 许可证表格：仅显示非 low 风险的包
-- 安全表格：仅显示有漏洞的包
+- **默认只展示直接依赖**；隐藏的子依赖数以斜体行内提示展示；`showTransitive` 选项启用全量展示
 
 ### 6.4 HTML 报告 (`src/report/html.ts`)
 
@@ -439,6 +478,7 @@ dep-radar scan --since main
   - 健康度表格 — 分数徽章（绿/黄/红）
   - 许可证表格 — 风险徽章
   - 安全审计 — 漏洞详情列表，含可修复/暂无修复标签
+- **直接依赖中心**：与终端 / Markdown 一致，bundle/health/license/security 表格默认只展示直接依赖；隐藏的子依赖数会以脚注形式提示
 - **Footer**：数据来源说明
 
 ---
@@ -450,8 +490,7 @@ dep-radar scan --since main
 基于 **cosmiconfig**，支持多种配置文件格式：
 
 - `dep-radar.config.ts` / `.js` / `.cjs` / `.mjs` / `.json`
-- `.dep-radarrc` / `.dep-radarrc.json` / `.dep-radarrc.yaml` / `.dep-radarrc.yml`
-- `.deprdarrc*` 旧拼写兼容
+- `.deprdarrc` / `.deprdarrc.json` / `.deprdarrc.yaml` / `.deprdarrc.yml`
 - `package.json` 的 `"dep-radar"` 字段
 
 找不到配置文件时返回空对象（不报错），解析失败时抛 `ConfigError`。
@@ -466,7 +505,7 @@ interface DepRadarConfig {
   }
   ignore?: string[] // 忽略的包，支持 glob 模式
   replacements?: Record<string, ReplacementRule> // 自定义替代方案
-  dataSource?: Array<'pkg-size' | 'bundlephobia' | 'local'> // 数据源优先级；local 为保留实验入口，当前会被跳过并提示
+  dataSource?: Array<'pkg-size' | 'bundlephobia' | 'local'> // 数据源优先级
   registry?: string // 自定义 npm registry
   cacheTTL?: number // 缓存 TTL（秒），默认 3600
   concurrency?: number // 并发请求数，默认 5，必须是 1-20 之间的整数
@@ -620,9 +659,9 @@ interface DepRadarConfig {
 
 ### 10.3 分析结果类型 (`analysis.ts`)
 
-- `BundleInfo` — 单包体积信息
-- `HealthInfo` — 单包健康度信息
-- `LicenseInfo` / `LicenseCategory` — 许可证信息
+- `BundleInfo` — 单包体积信息（含 `isDirect` 字段标识是否为直接依赖）
+- `HealthInfo` — 单包健康度信息（含 `isDirect` 字段标识是否为直接依赖）
+- `LicenseInfo` / `LicenseCategory` — 许可证信息（含 `isDirect` 字段标识是否为直接依赖）
 - `SecurityInfo` / `Vulnerability` — 安全漏洞信息
 - `OptimizationSuggestion` / `OptimizationType` — 优化建议
 - `AnalysisReport` — 顶层报告聚合（含 `dimensions` 标记）

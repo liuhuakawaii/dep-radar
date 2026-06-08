@@ -25,6 +25,7 @@ function makeBundle(
     hasJSModule: true,
     hasJSNext: false,
     source,
+    isDirect: true,
   }
 }
 

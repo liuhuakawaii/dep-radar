@@ -10,11 +10,12 @@ process.env.FORCE_COLOR = '0'
 vi.mock('../data/pkg-size.js', () => ({ getPackageSize: vi.fn() }))
 vi.mock('../data/bundlephobia.js', () => ({ getPackageSize: vi.fn() }))
 vi.mock('../data/npm.js', () => ({
-  getFullPackageInfo: vi.fn(),
   getPackageInfo: vi.fn(),
+  getPackageMeta: vi.fn(),
   getPackageVersionInfo: vi.fn(),
   getDownloadCount: vi.fn(),
   getDownloadTrend: vi.fn(),
+  getDownloadStats: vi.fn(),
 }))
 vi.mock('../data/github.js', () => ({
   getRepoInfo: vi.fn(),
@@ -23,11 +24,12 @@ vi.mock('../data/github.js', () => ({
 
 const { getPackageSize } = await import('../data/pkg-size.js')
 const {
-  getFullPackageInfo,
   getPackageInfo,
+  getPackageMeta,
   getPackageVersionInfo,
   getDownloadCount,
   getDownloadTrend,
+  getDownloadStats,
 } = await import('../data/npm.js')
 const { getRepoInfo, parseGitHubUrl } = await import('../data/github.js')
 const { _resetGithubTokenWarnedForTests } =
@@ -36,13 +38,14 @@ const { scanCommand } = await import('./scan.js')
 const { EXIT_CODES } = await import('../utils/exitCode.js')
 
 const pkgSize = getPackageSize as unknown as ReturnType<typeof vi.fn>
-const npmFullDoc = getFullPackageInfo as unknown as ReturnType<typeof vi.fn>
 const npmInfo = getPackageInfo as unknown as ReturnType<typeof vi.fn>
+const npmMeta = getPackageMeta as unknown as ReturnType<typeof vi.fn>
 const npmVersionInfo = getPackageVersionInfo as unknown as ReturnType<
   typeof vi.fn
 >
 const npmDl = getDownloadCount as unknown as ReturnType<typeof vi.fn>
 const npmTrend = getDownloadTrend as unknown as ReturnType<typeof vi.fn>
+const npmDlStats = getDownloadStats as unknown as ReturnType<typeof vi.fn>
 const ghRepo = getRepoInfo as unknown as ReturnType<typeof vi.fn>
 const parseGH = parseGitHubUrl as unknown as ReturnType<typeof vi.fn>
 
@@ -51,11 +54,12 @@ describe('scanCommand', () => {
 
   beforeEach(() => {
     pkgSize.mockReset()
-    npmFullDoc.mockReset()
     npmInfo.mockReset()
+    npmMeta.mockReset()
     npmVersionInfo.mockReset()
     npmDl.mockReset()
     npmTrend.mockReset()
+    npmDlStats.mockReset()
     ghRepo.mockReset()
     parseGH.mockReset()
     _resetGithubTokenWarnedForTests()
@@ -89,12 +93,13 @@ describe('scanCommand', () => {
 
   function mockHealthyReact() {
     parseGH.mockReturnValue({ owner: 'facebook', repo: 'react' })
-    npmFullDoc.mockResolvedValue({
+    npmInfo.mockResolvedValue({
       name: 'react',
+      version: '18.3.1',
+      types: './index.d.ts',
+    })
+    npmMeta.mockResolvedValue({
       'dist-tags': { latest: '18.3.1' },
-      versions: {
-        '18.3.1': { name: 'react', version: '18.3.1', types: './index.d.ts' },
-      },
       time: { '18.3.1': new Date().toISOString() },
       maintainers: [{ name: 'a' }, { name: 'b' }, { name: 'c' }, { name: 'd' }],
       repository: {
@@ -104,6 +109,7 @@ describe('scanCommand', () => {
     })
     npmDl.mockResolvedValue(500_000)
     npmTrend.mockResolvedValue('up')
+    npmDlStats.mockResolvedValue({ weekly: 500_000, trend: 'up' })
     ghRepo.mockResolvedValue({
       stargazers_count: 200_000,
       open_issues_count: 800,
@@ -198,7 +204,7 @@ describe('scanCommand', () => {
     expect(out.duplicateVersions).toBeDefined()
   })
 
-  it('默认模式只分析直接依赖，transitive 仅保留在 inventory 证据中', async () => {
+  it('默认模式只请求直接依赖体积，JSON 保留 transitive 占位证据', async () => {
     writePkg({ 'direct-a': '^1.0.0' })
     writePnpmLockWithTransitive()
     pkgSize.mockResolvedValueOnce(bundleOf('direct-a', 1000))
@@ -216,17 +222,27 @@ describe('scanCommand', () => {
 
     const out = JSON.parse(readFileSync(outFile, 'utf-8'))
     expect(out.inventory.entries).toHaveLength(2)
-    expect(out.bundles).toHaveLength(1)
-    expect(out.bundles[0].name).toBe('direct-a')
+    expect(out.bundles).toHaveLength(2)
+    expect(
+      out.bundles.find((bundle: { name: string }) => bundle.name === 'direct-a')
+        ?.isDirect,
+    ).toBe(true)
+    expect(
+      out.bundles.find(
+        (bundle: { name: string }) => bundle.name === 'transitive-a',
+      ),
+    ).toMatchObject({
+      isDirect: false,
+      source: 'unknown',
+      gzip: 0,
+    })
     expect(pkgSize).toHaveBeenCalledTimes(1)
   })
 
-  it('--deep 模式会分析 transitive 依赖', async () => {
+  it('--deep 模式会在 JSON 中保留 transitive 条目', async () => {
     writePkg({ 'direct-a': '^1.0.0' })
     writePnpmLockWithTransitive()
-    pkgSize
-      .mockResolvedValueOnce(bundleOf('direct-a', 1000))
-      .mockResolvedValueOnce(bundleOf('transitive-a', 500))
+    pkgSize.mockResolvedValueOnce(bundleOf('direct-a', 1000))
 
     const outFile = join(dir, 'r.json')
     const code = await scanCommand(dir, {
@@ -241,10 +257,10 @@ describe('scanCommand', () => {
     expect(code).toBe(EXIT_CODES.OK)
 
     const out = JSON.parse(readFileSync(outFile, 'utf-8'))
-    expect(out.bundles.map((bundle: { name: string }) => bundle.name)).toEqual([
-      'direct-a',
-      'transitive-a',
-    ])
+    expect(
+      out.bundles.map((bundle: { name: string }) => bundle.name).sort(),
+    ).toEqual(['direct-a', 'transitive-a'])
+    expect(pkgSize).toHaveBeenCalledTimes(1)
   })
 
   // -----------------------------------------------------------------
@@ -312,7 +328,7 @@ describe('scanCommand', () => {
       skipHealth: true,
     })
     expect(code).toBe(EXIT_CODES.OK)
-    expect(npmFullDoc).not.toHaveBeenCalled()
+    expect(npmMeta).not.toHaveBeenCalled()
     expect(npmDl).not.toHaveBeenCalled()
     expect(npmTrend).not.toHaveBeenCalled()
   })
@@ -419,15 +435,19 @@ describe('scanCommand', () => {
       hasJSNext: false,
       source: 'pkg-size',
     })
-    npmFullDoc.mockImplementation(async (n: string) => ({
+    npmInfo.mockImplementation(async (n: string) => ({
       name: n,
+      version: '1.0.0',
+      types: './i.d.ts',
+    }))
+    npmMeta.mockResolvedValue({
       'dist-tags': { latest: '1.0.0' },
-      versions: { '1.0.0': { name: n, version: '1.0.0', types: './i.d.ts' } },
       time: { '1.0.0': new Date().toISOString() },
       maintainers: [{ name: 'a' }, { name: 'b' }, { name: 'c' }, { name: 'd' }],
-    }))
+    })
     npmDl.mockResolvedValue(500_000)
     npmTrend.mockResolvedValue('up')
+    npmDlStats.mockResolvedValue({ weekly: 500_000, trend: 'up' })
     ghRepo.mockResolvedValue(null)
     npmInfo.mockResolvedValue({
       name: 'my-internal',

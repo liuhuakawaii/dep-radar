@@ -71,6 +71,21 @@ import {
 import { createCacheFromGlobals, loadSetup, renderReport } from './shared.js'
 
 // =====================================================================
+// 工具函数
+// =====================================================================
+
+/** 根据已用时间和当前进度估算剩余时间 */
+function formatEta(elapsedMs: number, current: number, total: number): string {
+  if (current === 0) return ''
+  const remainingMs = ((total - current) * elapsedMs) / current
+  const remainingSec = Math.round(remainingMs / 1000)
+  if (remainingSec < 60) return `~${remainingSec}s`
+  const min = Math.floor(remainingSec / 60)
+  const sec = remainingSec % 60
+  return `~${min}m${sec}s`
+}
+
+// =====================================================================
 // 公开类型
 // =====================================================================
 
@@ -145,6 +160,7 @@ function createContentHash(projectPath: string): string {
 }
 
 function createScanCacheKey(input: {
+  projectPath: string
   contentHash: string
   options: {
     deep: boolean
@@ -152,15 +168,16 @@ function createScanCacheKey(input: {
     skipHealth: boolean
     skipLicense: boolean
     skipSecurity: boolean
-    scope: 'runtime' | 'all' | 'non-runtime'
+    scope: ScanScope
     statsFile?: string
     assetsDir?: string
     registry?: string
-    concurrency?: number
+    concurrency: number
   }
   config: DepRadarConfig
 }): string {
   const normalized = JSON.stringify({
+    projectPath: input.projectPath,
     contentHash: input.contentHash,
     options: input.options,
     config: {
@@ -183,14 +200,6 @@ function createScanCacheKey(input: {
     .digest('hex')
     .slice(0, 16)
   return `scan-result:${hash}`
-}
-
-function selectEntriesForMode(
-  entries: DependencyInventory['entries'],
-  deep: boolean,
-): DependencyInventory['entries'] {
-  if (deep) return entries
-  return entries.filter(entry => entry.isDirect)
 }
 
 function buildDiagnostics(input: {
@@ -263,6 +272,7 @@ export async function scanCommand(
     concurrency,
     since,
   } = options
+
   if (!isScanReportFormat(rawFormat)) {
     logger.error(
       `不支持的输出格式 "${String(rawFormat)}"，可选值：${listChoices(SCAN_REPORT_FORMATS)}`,
@@ -275,6 +285,7 @@ export async function scanCommand(
     )
     return EXIT_CODES.ERROR
   }
+
   const format = rawFormat
   const scope = rawScope
   const normalizedConcurrency = validateConcurrency(concurrency)
@@ -311,6 +322,7 @@ export async function scanCommand(
   const resolvedConcurrency = normalizedConcurrency ?? configConcurrency ?? 5
   const contentHash = createContentHash(projectPath)
   const cacheKey = createScanCacheKey({
+    projectPath,
     contentHash,
     options: {
       deep,
@@ -335,7 +347,9 @@ export async function scanCommand(
     }>(cacheKey)
     if (cached) {
       const elapsed = performance.now() - scanStart
-      const rendered = renderReport(cached.report, format)
+      const rendered = renderReport(cached.report, format, {
+        showTransitive: deep,
+      })
       if (output) {
         const content = format === 'terminal' ? stripAnsi(rendered) : rendered
         await writeFile(output, content, 'utf-8')
@@ -419,7 +433,6 @@ export async function scanCommand(
     reachabilityResults,
   })
   inventory.entries = entries
-  const analysisEntries = selectEntriesForMode(entries, deep)
 
   // ============================================================
   // 2.7 并行跑四个 analyzer
@@ -443,11 +456,12 @@ export async function scanCommand(
   }
 
   const analysisSpinner = ora('正在跑全维度分析...').start()
+  const analysisStart = performance.now()
   let bundles, healthList, licenses, securityResult
   try {
     const bundleP = analyzeBundleSize(
-      analysisEntries,
-      buildBundleFetcher({
+      entries,
+      await buildBundleFetcher({
         dataSource: config.dataSource,
         cache,
         bundlephobiaRecord: config.bundlephobiaRecord,
@@ -457,33 +471,53 @@ export async function scanCommand(
         scope,
         ignore: config.ignore,
         onProgress: ({ current, total, name }) => {
-          analysisSpinner.text = `正在分析体积 [${current}/${total}] ${name}...`
+          const eta = formatEta(
+            performance.now() - analysisStart,
+            current,
+            total,
+          )
+          analysisSpinner.text = `正在分析体积 [${current}/${total}] ${name} ${eta}`
         },
       },
     )
     const healthP = skipHealth
       ? Promise.resolve({ health: [], skipped: [] })
       : analyzeHealth(
-          analysisEntries,
+          entries,
           buildHealthFetcher({ cache, registry: resolvedRegistry }),
           {
             concurrency: resolvedConcurrency,
             healthWeights: config.healthWeights,
             onProgress: ({ current, total, name }) => {
-              analysisSpinner.text = `正在分析健康度 [${current}/${total}] ${name}...`
+              const eta = formatEta(
+                performance.now() - analysisStart,
+                current,
+                total,
+              )
+              analysisSpinner.text = `正在分析健康度 [${current}/${total}] ${name} ${eta}`
             },
           },
         )
     const licenseP = skipLicense
       ? Promise.resolve({ licenses: [], projectConflicts: [], skipped: [] })
       : analyzeLicenses(
-          analysisEntries,
+          entries,
           buildLicenseFetcher({
             cache,
             registry: resolvedRegistry,
             projectPath,
           }),
-          { concurrency: resolvedConcurrency },
+          {
+            concurrency: resolvedConcurrency,
+            onProgress: ({ current, total, name }) => {
+              const eta = formatEta(
+                performance.now() - analysisStart,
+                current,
+                total,
+              )
+              analysisSpinner.text = `正在分析许可证 [${current}/${total}] ${name} ${eta}`
+            },
+          },
         )
     const securityP = skipSecurity
       ? Promise.resolve({
@@ -516,16 +550,8 @@ export async function scanCommand(
   // ============================================================
   // 2.8 依赖卫生 + 多版本检测
   // ============================================================
-  const hygieneIssues = detectHygieneIssues(
-    analysisEntries,
-    reachabilityResults,
-    {
-      ignore: config.hygiene?.ignore,
-      allowDynamic: config.hygiene?.allowDynamic,
-      runtimePackages: config.hygiene?.runtimePackages,
-    },
-  )
-  const duplicateVersions = deep ? detectDuplicateVersions(entries) : []
+  const hygieneIssues = detectHygieneIssues(entries, reachabilityResults)
+  const duplicateVersions = detectDuplicateVersions(entries)
 
   // ============================================================
   // 2.9 构建产物分析（可选）
@@ -570,6 +596,7 @@ export async function scanCommand(
     userReplacements: config.replacements,
     reachabilityResults,
     usageClassMap,
+    inventoryEntries: inventory.entries,
   })
 
   // ============================================================
@@ -647,7 +674,7 @@ export async function scanCommand(
     },
     diagnostics,
     summary: {
-      totalDependencies: analysisEntries.length,
+      totalDependencies: bundles.bundles.length,
       totalSize: bundles.totalSize,
       totalGzip: bundles.totalGzip,
       maxDepth: 0,
@@ -670,7 +697,7 @@ export async function scanCommand(
   // ============================================================
   // 6. 输出
   // ============================================================
-  const rendered = renderReport(report, format)
+  const rendered = renderReport(report, format, { showTransitive: deep })
   if (output) {
     try {
       const content = format === 'terminal' ? stripAnsi(rendered) : rendered

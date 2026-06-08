@@ -112,6 +112,7 @@ describe('scoreFindings', () => {
             license: 'GPL-3.0',
             licenseType: 'strong-copyleft',
             risk: 'high',
+            isDirect: true,
           },
         ],
       }),

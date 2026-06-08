@@ -114,6 +114,7 @@ describe('renderTerminalReport', () => {
             hasJSModule: false,
             hasJSNext: false,
             source: 'pkg-size',
+            isDirect: true,
           },
           {
             name: '@private/x',
@@ -125,6 +126,7 @@ describe('renderTerminalReport', () => {
             hasJSNext: false,
             source: 'unknown',
             error: 'private package',
+            isDirect: true,
           },
         ],
       }),
@@ -152,6 +154,7 @@ describe('renderTerminalReport', () => {
             deprecated: false,
             hasTypeScriptTypes: true,
             healthScore: 95,
+            isDirect: true,
           },
         ],
       }),
@@ -170,11 +173,12 @@ describe('renderTerminalReport', () => {
             license: 'MIT',
             licenseType: 'permissive',
             risk: 'low',
+            isDirect: true,
           },
         ],
       }),
     )
-    expect(out).toContain('全部 1 个依赖')
+    expect(out).toContain('全部 1 个直接依赖')
     expect(out).toContain('低风险')
   })
 
@@ -188,6 +192,7 @@ describe('renderTerminalReport', () => {
             licenseType: 'strong-copyleft',
             risk: 'high',
             conflict: 'GPL 可能要求开源',
+            isDirect: true,
           },
         ],
       }),
@@ -213,24 +218,117 @@ describe('renderTerminalReport', () => {
     expect(out1).toContain('未发现已知漏洞')
   })
 
-  it('security 有 skipped 时不应误导为未发现漏洞', () => {
-    const out = renderTerminalReport(
-      emptyReport({
-        diagnostics: {
-          partial: true,
-          skipped: [
+  it('bundle/health/license 默认隐藏子依赖，showTransitive=true 时显示', () => {
+    const r = emptyReport({
+      bundles: [
+        {
+          name: 'react',
+          version: '18.0.0',
+          size: 100_000,
+          gzip: 30_000,
+          dependencyCount: 0,
+          hasJSModule: true,
+          hasJSNext: false,
+          source: 'pkg-size',
+          isDirect: true,
+        },
+        {
+          name: 'old-jquery',
+          version: '1.0.0',
+          size: 80_000,
+          gzip: 30_000,
+          dependencyCount: 0,
+          hasJSModule: false,
+          hasJSNext: false,
+          source: 'pkg-size',
+          isDirect: false,
+        },
+      ],
+      health: [
+        {
+          name: 'react',
+          weeklyDownloads: 1000,
+          downloadTrend: 'stable',
+          lastPublish: '2026-01-01T00:00:00Z',
+          maintainers: 5,
+          openIssues: 0,
+          deprecated: false,
+          hasTypeScriptTypes: true,
+          healthScore: 90,
+          isDirect: true,
+        },
+        {
+          name: 'old-jquery',
+          weeklyDownloads: 10,
+          downloadTrend: 'down',
+          lastPublish: '2018-01-01T00:00:00Z',
+          maintainers: 0,
+          openIssues: 200,
+          deprecated: true,
+          hasTypeScriptTypes: false,
+          healthScore: 10,
+          isDirect: false,
+        },
+      ],
+      licenses: [
+        {
+          name: 'risky-trans',
+          license: 'GPL-3.0',
+          licenseType: 'strong-copyleft',
+          risk: 'high',
+          isDirect: false,
+        },
+      ],
+    })
+    const def = renderTerminalReport(r)
+    // 默认：直接依赖 react 出现，子依赖 old-jquery 与 risky-trans 隐藏
+    expect(def).toContain('react')
+    expect(def).not.toContain('old-jquery')
+    expect(def).not.toContain('risky-trans')
+    expect(def).toMatch(/--deep/)
+
+    const deep = renderTerminalReport(r, { showTransitive: true })
+    expect(deep).toContain('old-jquery')
+    expect(deep).toContain('risky-trans')
+  })
+
+  it('安全审计：默认只显示直接依赖漏洞，子依赖漏洞被隐藏并归并到优化建议提示', () => {
+    const r = emptyReport({
+      security: [
+        {
+          name: 'axios',
+          vulnerabilities: [
             {
-              dimension: 'security',
-              name: '*',
-              reason: 'audit command failed',
+              severity: 'high',
+              title: 'CSRF',
+              url: '',
+              fixAvailable: true,
             },
           ],
-          warnings: [],
+          totalVulnerabilities: 1,
+          highestSeverity: 'high',
+          isDirect: true,
         },
-      }),
-    )
-    expect(out).toContain('安全审计未完整运行')
-    expect(out).not.toContain('未发现已知漏洞')
+        {
+          name: 'semver',
+          vulnerabilities: [
+            {
+              severity: 'moderate',
+              title: 'ReDoS',
+              url: '',
+              fixAvailable: false,
+            },
+          ],
+          totalVulnerabilities: 1,
+          highestSeverity: 'moderate',
+          isDirect: false,
+        },
+      ],
+    })
+    const def = renderTerminalReport(r)
+    expect(def).toContain('axios')
+    expect(def).not.toContain('semver')
+    expect(def).toMatch(/已归并到优化建议/)
   })
 
   it('optimizations 应按优先级 + 节省量降序', () => {

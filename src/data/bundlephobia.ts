@@ -52,7 +52,10 @@ export async function getPackageSize(
   const fetchFn = async (): Promise<BundleInfo> => {
     let data: BundlephobiaResponse
     try {
-      data = await fetchJson<BundlephobiaResponse>(url, { timeout: 15000 })
+      data = await fetchJson<BundlephobiaResponse>(url, {
+        timeout: 15000,
+        retries: 1,
+      })
     } catch (err) {
       if (err instanceof NetworkError && err.status === 404) {
         throw new PackageNotFoundError(spec, { cause: err })
@@ -70,9 +73,10 @@ export async function getPackageSize(
       hasJSModule: data.hasJSModule,
       hasJSNext: data.hasJSNext,
       source: 'bundlephobia',
+      isDirect: true, // 默认值，调用方会覆盖
     }
   }
 
-  if (cache) return cache.withCache(`bundlephobia:${spec}`, fetchFn)
+  if (cache) return cache.withCacheOrError(`bundlephobia:${spec}`, fetchFn)
   return fetchFn()
 }

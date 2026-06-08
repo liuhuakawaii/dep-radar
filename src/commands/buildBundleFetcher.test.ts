@@ -37,7 +37,7 @@ describe('buildBundleFetcher', () => {
 
   it('默认按 pkg-size → bundlephobia 顺序尝试', async () => {
     pkgSize.mockResolvedValueOnce(sampleBundle('pkg-size'))
-    const fetcher = buildBundleFetcher()
+    const fetcher = await buildBundleFetcher()
     const got = await fetcher('react', '18.3.1')
     expect(got.source).toBe('pkg-size')
     expect(pkgSize).toHaveBeenCalledTimes(1)
@@ -47,7 +47,7 @@ describe('buildBundleFetcher', () => {
   it('pkg-size 失败时 fallback 到 bundlephobia', async () => {
     pkgSize.mockRejectedValueOnce(new NetworkError('boom', 500))
     bundlephobia.mockResolvedValueOnce(sampleBundle('bundlephobia'))
-    const fetcher = buildBundleFetcher()
+    const fetcher = await buildBundleFetcher()
     const got = await fetcher('react', '18.3.1')
     expect(got.source).toBe('bundlephobia')
     expect(pkgSize).toHaveBeenCalledTimes(1)
@@ -56,7 +56,7 @@ describe('buildBundleFetcher', () => {
 
   it('PackageNotFoundError 不应 fallback（包确实不存在）', async () => {
     pkgSize.mockRejectedValueOnce(new PackageNotFoundError('react'))
-    const fetcher = buildBundleFetcher()
+    const fetcher = await buildBundleFetcher()
     let caught: unknown
     await fetcher('react', '18.3.1').catch(e => {
       caught = e
@@ -68,7 +68,7 @@ describe('buildBundleFetcher', () => {
   it('全部源失败时抛最后一次错误', async () => {
     pkgSize.mockRejectedValueOnce(new NetworkError('a', 500))
     bundlephobia.mockRejectedValueOnce(new NetworkError('b', 503))
-    const fetcher = buildBundleFetcher()
+    const fetcher = await buildBundleFetcher()
     let caught: unknown
     await fetcher('x').catch(e => {
       caught = e
@@ -79,7 +79,7 @@ describe('buildBundleFetcher', () => {
 
   it('dataSource 参数应改变优先级顺序', async () => {
     bundlephobia.mockResolvedValueOnce(sampleBundle('bundlephobia'))
-    const fetcher = buildBundleFetcher({
+    const fetcher = await buildBundleFetcher({
       dataSource: ['bundlephobia', 'pkg-size'],
     })
     const got = await fetcher('react')
@@ -89,21 +89,22 @@ describe('buildBundleFetcher', () => {
 
   it('local 数据源应被跳过并继续其他源', async () => {
     pkgSize.mockResolvedValueOnce(sampleBundle('pkg-size'))
-    const fetcher = buildBundleFetcher({
+    const fetcher = await buildBundleFetcher({
       dataSource: ['local', 'pkg-size'],
     })
     const got = await fetcher('react')
     expect(got.source).toBe('pkg-size')
   })
 
-  it('dataSource 全为不可用源时应抛错', () => {
-    expect(() => buildBundleFetcher({ dataSource: ['local'] })).toThrow()
+  it('dataSource 全为不可用源时应抛错', async () => {
+    const fetcher = await buildBundleFetcher({ dataSource: ['local'] })
+    await expect(fetcher('x')).rejects.toThrow()
   })
 
   it('dataSource 重复项应自动去重', async () => {
     pkgSize.mockRejectedValueOnce(new NetworkError('boom', 500))
     bundlephobia.mockResolvedValueOnce(sampleBundle('bundlephobia'))
-    const fetcher = buildBundleFetcher({
+    const fetcher = await buildBundleFetcher({
       dataSource: ['pkg-size', 'pkg-size', 'bundlephobia'],
     })
     await fetcher('x')

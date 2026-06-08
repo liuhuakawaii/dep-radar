@@ -81,6 +81,19 @@ export interface NpmFullDocResponse {
 }
 
 /**
+ * GET https://registry.npmjs.org/{pkg}?field=time&field=maintainers&field=dist-tags&field=repository
+ *
+ * 轻量 document：只拉取 health analyzer 需要的顶层字段，
+ * 不包含 versions map（那才是数据量大的根源）。
+ */
+export interface NpmPackageMetaResponse {
+  'dist-tags'?: { latest?: string; [tag: string]: string | undefined }
+  time?: Record<string, string>
+  maintainers?: Array<{ name: string }>
+  repository?: { type: string; url: string } | string
+}
+
+/**
  * GET https://api.npmjs.org/downloads/point/{period}/{pkg}
  */
 export interface NpmDownloadsResponse {

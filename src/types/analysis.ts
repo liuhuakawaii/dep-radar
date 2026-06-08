@@ -37,6 +37,8 @@ export interface BundleInfo {
   source: 'pkg-size' | 'bundlephobia' | 'local' | 'unknown'
   /** 数据获取失败原因（如"私有包"、"网络超时"） */
   error?: string
+  /** 是否为直接依赖 */
+  isDirect: boolean
 }
 
 // =====================================================================
@@ -67,6 +69,8 @@ export interface HealthInfo {
   hasTypeScriptTypes: boolean
   /** 综合健康度 0-100；算法见 src/analyzers/health.ts */
   healthScore: number
+  /** 是否为直接依赖 */
+  isDirect: boolean
 }
 
 // =====================================================================
@@ -110,6 +114,8 @@ export interface LicenseInfo {
   needsHumanReview?: boolean
   /** 人工审核原因 */
   humanReviewReason?: string
+  /** 是否为直接依赖 */
+  isDirect: boolean
 }
 
 // =====================================================================
@@ -296,6 +302,43 @@ export interface AnalysisReport {
   duplicateVersions?: DuplicateVersionInfo[]
   /** 构建产物分析结果 */
   buildArtifacts?: BuildArtifactResult
+}
+
+// =====================================================================
+// diff 命令结果
+// =====================================================================
+
+export interface DiffReport {
+  before: { project: string; timestamp: string }
+  after: { project: string; timestamp: string }
+  summary: {
+    totalGzip: { before: number; after: number }
+    totalSize: { before: number; after: number }
+    totalDependencies: { before: number; after: number }
+    deprecatedCount: { before: number; after: number }
+    vulnerabilities: {
+      before: { critical: number; high: number; moderate: number; low: number }
+      after: { critical: number; high: number; moderate: number; low: number }
+    }
+  }
+  bundles: {
+    added: BundleInfo[]
+    removed: BundleInfo[]
+    changed: Array<{
+      name: string
+      beforeGzip: number
+      afterGzip: number
+      delta: number
+    }>
+  }
+  health: {
+    newlyDeprecated: Array<{ name: string; message?: string }>
+    scoreChanges: Array<{ name: string; before: number; after: number }>
+  }
+  security: {
+    new: SecurityInfo[]
+    resolved: SecurityInfo[]
+  }
 }
 
 // =====================================================================

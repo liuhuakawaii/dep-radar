@@ -120,6 +120,7 @@ describe('renderHtmlReport', () => {
             hasJSModule: true,
             hasJSNext: false,
             source: 'pkg-size',
+            isDirect: true,
           },
         ],
       }),
@@ -171,6 +172,7 @@ describe('renderHtmlReport', () => {
             deprecated: false,
             hasTypeScriptTypes: true,
             healthScore: 95,
+            isDirect: true,
           },
         ],
       }),
@@ -187,11 +189,12 @@ describe('renderHtmlReport', () => {
             license: 'MIT',
             licenseType: 'permissive',
             risk: 'low',
+            isDirect: true,
           },
         ],
       }),
     )
-    expect(html).toContain('全部 1 个依赖')
+    expect(html).toContain('全部 1 个直接依赖')
   })
 
   it('license 含 high → 显示风险表', () => {
@@ -204,6 +207,7 @@ describe('renderHtmlReport', () => {
             licenseType: 'strong-copyleft',
             risk: 'high',
             conflict: 'GPL 可能要求开源',
+            isDirect: true,
           },
         ],
       }),
@@ -226,6 +230,7 @@ describe('renderHtmlReport', () => {
             hasJSModule: false,
             hasJSNext: false,
             source: 'pkg-size',
+            isDirect: true,
           },
         ],
       }),

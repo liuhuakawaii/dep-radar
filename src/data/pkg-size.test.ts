@@ -44,6 +44,7 @@ describe('getPackageSize (pkg-size.dev)', () => {
       hasJSModule: false,
       hasJSNext: false,
       source: 'pkg-size',
+      isDirect: true,
     })
   })
 

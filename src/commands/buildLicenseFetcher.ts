@@ -23,6 +23,7 @@ import {
 } from '../analyzers/license.js'
 import type { DataCache } from '../data/cache.js'
 import { getPackageVersionInfo } from '../data/npm.js'
+import type { NpmRegistryResponse } from '../types/api.js'
 
 export interface BuildLicenseFetcherOptions {
   /** 缓存实例；不传则不缓存 */
@@ -38,14 +39,31 @@ export function buildLicenseFetcher(
 ): LicenseFetcher {
   const { cache, registry, projectPath } = options
   return {
-    getLicense: async (name, version) => {
-      // 1. 尝试从 node_modules 读取
+    getLicense: async (name, version, isDirect = true) => {
+      // 1. 尝试从 node_modules 读取（cheapest path，对 direct/transitive 都做）
       if (projectPath) {
         const nmLicense = await readFromNodeModules(projectPath, name)
         if (nmLicense !== undefined) return nmLicense
       }
 
-      // 2. 从 registry 获取
+      // 2. 子依赖不再 fallback 到 registry（避免对 transitive 大量发请求）。
+      //    transitive 在 node_modules 里读不到几乎只有两种情况：
+      //      a) 未安装 / 包名异常 —— 报 unknown 即可
+      //      b) PnP 等非典型布局 —— 用户大概率不会在 transitive 看 license
+      if (!isDirect) return undefined
+
+      // 3. 直接依赖从 registry 获取
+      //    优先复用 health analyzer 已缓存的 /latest 数据（版本匹配时）
+      if (cache && version) {
+        const cachedLatest = await cache.get<NpmRegistryResponse>(
+          `npm-info:${name}`,
+        )
+        if (cachedLatest && cachedLatest.version === version) {
+          const license = normalizeLicenseField(cachedLatest.license)
+          if (license) return license
+        }
+      }
+
       const manifest = await getPackageVersionInfo(
         name,
         version,

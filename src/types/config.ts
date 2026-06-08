@@ -46,6 +46,7 @@ export interface ReplacementRule {
  * 支持的配置文件位置（由 cosmiconfig 自动发现）：
  * - dep-radar.config.ts / .js / .json
  * - .dep-radarrc / .dep-radarrc.json
+ * - .deprdarrc* 旧拼写兼容
  * - package.json 的 "dep-radar" 字段
  *
  * @example
@@ -88,7 +89,7 @@ export interface DepRadarConfig {
    * 数据源优先级
    *
    * 默认 ['pkg-size', 'bundlephobia']；
-   * 'local' 为保留实验入口，当前会被跳过并给出警告。
+   * 加入 'local' 可启用本地 esbuild fallback（适合离线/私有包场景）。
    */
   dataSource?: Array<'pkg-size' | 'bundlephobia' | 'local'>
   /** 自定义 npm registry URL */

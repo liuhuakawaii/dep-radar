@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { parseGitHubUrl } from '../data/github.js'
-import type { GithubRepoResponse, NpmFullDocResponse } from '../types/api.js'
+import type {
+  GithubRepoResponse,
+  NpmPackageMetaResponse,
+  NpmRegistryResponse,
+} from '../types/api.js'
 import type { HealthInfo } from '../types/analysis.js'
 import type { PackageJson } from '../types/package.js'
 
@@ -19,29 +23,32 @@ import {
 
 function makeFetcher(overrides: Partial<HealthFetcher> = {}): HealthFetcher {
   return {
-    getFullDoc: vi.fn(),
-    getWeeklyDownloads: vi.fn(),
-    getTrend: vi.fn(),
+    getLiteDoc: vi.fn(),
+    getMeta: vi.fn(),
+    getDownloadStats: vi.fn().mockResolvedValue({ weekly: 0, trend: 'stable' }),
     getGitHubRepo: vi.fn(),
     ...overrides,
   }
 }
 
-function makeDoc(
-  partial: Partial<NpmFullDocResponse> = {},
-  manifestPartial: Record<string, unknown> = {},
-): NpmFullDocResponse {
+/** /latest manifest fixture（getLiteDoc 返回值） */
+function makeManifest(
+  partial: Record<string, unknown> = {},
+): NpmRegistryResponse {
   return {
     name: 'react',
+    version: '18.3.1',
+    types: './index.d.ts',
+    ...partial,
+  } as NpmRegistryResponse
+}
+
+/** 轻量元数据 fixture（getMeta 返回值） */
+function makeMeta(
+  partial: Partial<NpmPackageMetaResponse> = {},
+): NpmPackageMetaResponse {
+  return {
     'dist-tags': { latest: '18.3.1' },
-    versions: {
-      '18.3.1': {
-        name: 'react',
-        version: '18.3.1',
-        types: './index.d.ts',
-        ...manifestPartial,
-      },
-    },
     time: {
       '18.3.1': '2026-05-01T00:00:00.000Z',
       modified: '2026-05-01T00:00:00.000Z',
@@ -66,6 +73,7 @@ function baseInfo(over: Partial<HealthInfo> = {}): HealthInfo {
     deprecated: false,
     hasTypeScriptTypes: false,
     healthScore: 0,
+    isDirect: true,
     ...over,
   }
 }
@@ -303,9 +311,11 @@ describe('analyzeHealth', () => {
 
   it('happy path：拉取 + 评分 + 包含 GitHub 数据', async () => {
     const fetcher = makeFetcher({
-      getFullDoc: vi.fn().mockResolvedValue(makeDoc()),
-      getWeeklyDownloads: vi.fn().mockResolvedValue(500_000),
-      getTrend: vi.fn().mockResolvedValue('up'),
+      getLiteDoc: vi.fn().mockResolvedValue(makeManifest()),
+      getMeta: vi.fn().mockResolvedValue(makeMeta()),
+      getDownloadStats: vi
+        .fn()
+        .mockResolvedValue({ weekly: 500_000, trend: 'up' }),
       getGitHubRepo: vi.fn().mockResolvedValue({
         stargazers_count: 200_000,
         open_issues_count: 800,
@@ -338,11 +348,16 @@ describe('analyzeHealth', () => {
   })
 
   it('deprecated 包应反映为 deprecated=true 且 healthScore=0', async () => {
-    const doc = makeDoc({}, { deprecated: '已废弃，请使用 X 替代' })
     const fetcher = makeFetcher({
-      getFullDoc: vi.fn().mockResolvedValue(doc),
-      getWeeklyDownloads: vi.fn().mockResolvedValue(1_000_000),
-      getTrend: vi.fn().mockResolvedValue('up'),
+      getLiteDoc: vi
+        .fn()
+        .mockResolvedValue(
+          makeManifest({ deprecated: '已废弃，请使用 X 替代' }),
+        ),
+      getMeta: vi.fn().mockResolvedValue(makeMeta()),
+      getDownloadStats: vi
+        .fn()
+        .mockResolvedValue({ weekly: 1_000_000, trend: 'up' }),
       getGitHubRepo: vi.fn().mockResolvedValue(null),
     })
 
@@ -358,9 +373,11 @@ describe('analyzeHealth', () => {
 
   it('GitHub 失败（fetcher 返回 null）应软退化：stars/lastPush 缺失但 healthScore 仍能算出', async () => {
     const fetcher = makeFetcher({
-      getFullDoc: vi.fn().mockResolvedValue(makeDoc()),
-      getWeeklyDownloads: vi.fn().mockResolvedValue(500_000),
-      getTrend: vi.fn().mockResolvedValue('up'),
+      getLiteDoc: vi.fn().mockResolvedValue(makeManifest()),
+      getMeta: vi.fn().mockResolvedValue(makeMeta()),
+      getDownloadStats: vi
+        .fn()
+        .mockResolvedValue({ weekly: 500_000, trend: 'up' }),
       getGitHubRepo: vi.fn().mockResolvedValue(null),
     })
 
@@ -377,9 +394,11 @@ describe('analyzeHealth', () => {
   it('无 repository 时不应调用 getGitHubRepo', async () => {
     const ghMock = vi.fn()
     const fetcher = makeFetcher({
-      getFullDoc: vi.fn().mockResolvedValue(makeDoc({ repository: undefined })),
-      getWeeklyDownloads: vi.fn().mockResolvedValue(100),
-      getTrend: vi.fn().mockResolvedValue('stable'),
+      getLiteDoc: vi.fn().mockResolvedValue(makeManifest()),
+      getMeta: vi.fn().mockResolvedValue(makeMeta({ repository: undefined })),
+      getDownloadStats: vi
+        .fn()
+        .mockResolvedValue({ weekly: 100, trend: 'stable' }),
       getGitHubRepo: ghMock,
     })
     await analyzeHealthFromPackage(makePkg({ x: '1' }), fetcher)
@@ -389,13 +408,15 @@ describe('analyzeHealth', () => {
   it('非 GitHub 仓库不应调用 getGitHubRepo', async () => {
     const ghMock = vi.fn()
     const fetcher = makeFetcher({
-      getFullDoc: vi.fn().mockResolvedValue(
-        makeDoc({
+      getLiteDoc: vi.fn().mockResolvedValue(makeManifest()),
+      getMeta: vi.fn().mockResolvedValue(
+        makeMeta({
           repository: { type: 'git', url: 'https://gitlab.com/a/b' },
         }),
       ),
-      getWeeklyDownloads: vi.fn().mockResolvedValue(100),
-      getTrend: vi.fn().mockResolvedValue('stable'),
+      getDownloadStats: vi
+        .fn()
+        .mockResolvedValue({ weekly: 100, trend: 'stable' }),
       getGitHubRepo: ghMock,
     })
     await analyzeHealthFromPackage(makePkg({ x: '1' }), fetcher)
@@ -404,12 +425,14 @@ describe('analyzeHealth', () => {
 
   it('npm doc 拉取失败 → 该包整条 skipped，其他包不受影响', async () => {
     const fetcher = makeFetcher({
-      getFullDoc: vi.fn().mockImplementation(async name => {
+      getLiteDoc: vi.fn().mockImplementation(async name => {
         if (name === 'broken') throw new Error('boom')
-        return makeDoc()
+        return makeManifest()
       }),
-      getWeeklyDownloads: vi.fn().mockResolvedValue(100),
-      getTrend: vi.fn().mockResolvedValue('stable'),
+      getMeta: vi.fn().mockResolvedValue(makeMeta()),
+      getDownloadStats: vi
+        .fn()
+        .mockResolvedValue({ weekly: 100, trend: 'stable' }),
       getGitHubRepo: vi.fn().mockResolvedValue(null),
     })
 
@@ -423,9 +446,11 @@ describe('analyzeHealth', () => {
 
   it('includeDev=false 时不应分析 devDependencies', async () => {
     const fetcher = makeFetcher({
-      getFullDoc: vi.fn().mockResolvedValue(makeDoc()),
-      getWeeklyDownloads: vi.fn().mockResolvedValue(100),
-      getTrend: vi.fn().mockResolvedValue('stable'),
+      getLiteDoc: vi.fn().mockResolvedValue(makeManifest()),
+      getMeta: vi.fn().mockResolvedValue(makeMeta()),
+      getDownloadStats: vi
+        .fn()
+        .mockResolvedValue({ weekly: 100, trend: 'stable' }),
       getGitHubRepo: vi.fn().mockResolvedValue(null),
     })
     const r = await analyzeHealthFromPackage(
@@ -437,9 +462,11 @@ describe('analyzeHealth', () => {
 
   it('includeDev=true 时应包含 devDependencies', async () => {
     const fetcher = makeFetcher({
-      getFullDoc: vi.fn().mockResolvedValue(makeDoc()),
-      getWeeklyDownloads: vi.fn().mockResolvedValue(100),
-      getTrend: vi.fn().mockResolvedValue('stable'),
+      getLiteDoc: vi.fn().mockResolvedValue(makeManifest()),
+      getMeta: vi.fn().mockResolvedValue(makeMeta()),
+      getDownloadStats: vi
+        .fn()
+        .mockResolvedValue({ weekly: 100, trend: 'stable' }),
       getGitHubRepo: vi.fn().mockResolvedValue(null),
     })
     const r = await analyzeHealthFromPackage(
@@ -454,9 +481,11 @@ describe('analyzeHealth', () => {
 
   it('ignore 模式（glob *）应跳过匹配包', async () => {
     const fetcher = makeFetcher({
-      getFullDoc: vi.fn().mockResolvedValue(makeDoc()),
-      getWeeklyDownloads: vi.fn().mockResolvedValue(100),
-      getTrend: vi.fn().mockResolvedValue('stable'),
+      getLiteDoc: vi.fn().mockResolvedValue(makeManifest()),
+      getMeta: vi.fn().mockResolvedValue(makeMeta()),
+      getDownloadStats: vi
+        .fn()
+        .mockResolvedValue({ weekly: 100, trend: 'stable' }),
       getGitHubRepo: vi.fn().mockResolvedValue(null),
     })
     const r = await analyzeHealthFromPackage(
@@ -468,11 +497,16 @@ describe('analyzeHealth', () => {
   })
 
   it('类型字段缺失时 hasTypeScriptTypes=false', async () => {
-    const doc = makeDoc({}, { types: undefined, typings: undefined })
     const fetcher = makeFetcher({
-      getFullDoc: vi.fn().mockResolvedValue(doc),
-      getWeeklyDownloads: vi.fn().mockResolvedValue(100),
-      getTrend: vi.fn().mockResolvedValue('stable'),
+      getLiteDoc: vi
+        .fn()
+        .mockResolvedValue(
+          makeManifest({ types: undefined, typings: undefined }),
+        ),
+      getMeta: vi.fn().mockResolvedValue(makeMeta()),
+      getDownloadStats: vi
+        .fn()
+        .mockResolvedValue({ weekly: 100, trend: 'stable' }),
       getGitHubRepo: vi.fn().mockResolvedValue(null),
     })
     const r = await analyzeHealthFromPackage(makePkg({ a: '1' }), fetcher)
@@ -480,24 +514,27 @@ describe('analyzeHealth', () => {
   })
 
   it('typings 字段（旧名）也应识别为有 TS 支持', async () => {
-    const doc = makeDoc({}, { types: undefined, typings: './index.d.ts' })
     const fetcher = makeFetcher({
-      getFullDoc: vi.fn().mockResolvedValue(doc),
-      getWeeklyDownloads: vi.fn().mockResolvedValue(100),
-      getTrend: vi.fn().mockResolvedValue('stable'),
+      getLiteDoc: vi
+        .fn()
+        .mockResolvedValue(
+          makeManifest({ types: undefined, typings: './index.d.ts' }),
+        ),
+      getMeta: vi.fn().mockResolvedValue(makeMeta()),
+      getDownloadStats: vi
+        .fn()
+        .mockResolvedValue({ weekly: 100, trend: 'stable' }),
       getGitHubRepo: vi.fn().mockResolvedValue(null),
     })
     const r = await analyzeHealthFromPackage(makePkg({ a: '1' }), fetcher)
     expect(r.health[0]!.hasTypeScriptTypes).toBe(true)
   })
 
-  it('weeklyDownloads / trend 单字段拉取失败应有合理 fallback（0 / stable）', async () => {
+  it('downloadStats 拉取失败应有合理 fallback（0 / stable）', async () => {
     const fetcher = makeFetcher({
-      getFullDoc: vi.fn().mockResolvedValue(makeDoc()),
-      getWeeklyDownloads: vi
-        .fn()
-        .mockRejectedValue(new Error('downloads down')),
-      getTrend: vi.fn().mockRejectedValue(new Error('trend down')),
+      getLiteDoc: vi.fn().mockResolvedValue(makeManifest()),
+      getMeta: vi.fn().mockResolvedValue(makeMeta()),
+      getDownloadStats: vi.fn().mockRejectedValue(new Error('downloads down')),
       getGitHubRepo: vi.fn().mockResolvedValue(null),
     })
     const r = await analyzeHealthFromPackage(makePkg({ react: '^18' }), fetcher)

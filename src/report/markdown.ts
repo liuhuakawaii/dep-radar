@@ -19,15 +19,32 @@ import {
   formatRelativeTime,
 } from '../utils/format.js'
 
-export function renderMarkdownReport(report: AnalysisReport): string {
+export interface MarkdownReportOptions {
+  /** 是否展示子依赖（默认 false，--deep 时为 true） */
+  showTransitive?: boolean
+}
+
+export function renderMarkdownReport(
+  report: AnalysisReport,
+  options: MarkdownReportOptions = {},
+): string {
+  const showTransitive = options.showTransitive ?? false
   const sections = [
     renderHeader(report),
     renderSummary(report),
     renderDiagnostics(report),
-    report.dimensions.size ? renderBundleSection(report.bundles) : '',
-    report.dimensions.health ? renderHealthSection(report.health) : '',
-    report.dimensions.license ? renderLicenseSection(report.licenses) : '',
-    report.dimensions.security ? renderSecuritySection(report) : '',
+    report.dimensions.size
+      ? renderBundleSection(report.bundles, showTransitive)
+      : '',
+    report.dimensions.health
+      ? renderHealthSection(report.health, showTransitive)
+      : '',
+    report.dimensions.license
+      ? renderLicenseSection(report.licenses, showTransitive)
+      : '',
+    report.dimensions.security
+      ? renderSecuritySection(report, showTransitive)
+      : '',
     report.dimensions.optimize
       ? renderOptimizationSection(report.optimizations)
       : '',
@@ -102,10 +119,23 @@ function renderSummary(report: AnalysisReport): string {
   return lines.join('\n')
 }
 
-function renderBundleSection(bundles: BundleInfo[]): string {
+function renderBundleSection(
+  bundles: BundleInfo[],
+  showTransitive: boolean,
+): string {
   if (bundles.length === 0) return ''
 
-  const sorted = [...bundles].sort((a, b) => b.gzip - a.gzip)
+  const scoped = showTransitive ? bundles : bundles.filter(b => b.isDirect)
+  const transitiveHidden = bundles.length - scoped.length
+  if (scoped.length === 0) {
+    return [
+      '## 包体积',
+      '',
+      `_无直接依赖体积数据（隐藏了 ${transitiveHidden} 个子依赖，--deep 查看全部）_`,
+    ].join('\n')
+  }
+
+  const sorted = [...scoped].sort((a, b) => b.gzip - a.gzip)
   const totalGzip = sorted.reduce((s, b) => s + b.gzip, 0)
 
   const lines = [
@@ -125,13 +155,30 @@ function renderBundleSection(bundles: BundleInfo[]): string {
     )
   }
 
+  if (transitiveHidden > 0) {
+    lines.push('')
+    lines.push(`_隐藏了 ${transitiveHidden} 个子依赖；--deep 查看全部_`)
+  }
   return lines.join('\n')
 }
 
-function renderHealthSection(health: HealthInfo[]): string {
+function renderHealthSection(
+  health: HealthInfo[],
+  showTransitive: boolean,
+): string {
   if (health.length === 0) return ''
 
-  const sorted = [...health].sort((a, b) => b.healthScore - a.healthScore)
+  const scoped = showTransitive ? health : health.filter(h => h.isDirect)
+  const transitiveHidden = health.length - scoped.length
+  if (scoped.length === 0) {
+    return [
+      '## 健康度',
+      '',
+      `_无直接依赖健康度数据（隐藏了 ${transitiveHidden} 个子依赖，--deep 查看全部）_`,
+    ].join('\n')
+  }
+
+  const sorted = [...scoped].sort((a, b) => b.healthScore - a.healthScore)
 
   const lines = [
     '## 健康度',
@@ -153,15 +200,33 @@ function renderHealthSection(health: HealthInfo[]): string {
     )
   }
 
+  if (transitiveHidden > 0) {
+    lines.push('')
+    lines.push(`_隐藏了 ${transitiveHidden} 个子依赖；--deep 查看全部_`)
+  }
   return lines.join('\n')
 }
 
-function renderLicenseSection(licenses: LicenseInfo[]): string {
+function renderLicenseSection(
+  licenses: LicenseInfo[],
+  showTransitive: boolean,
+): string {
   if (licenses.length === 0) return ''
 
+  const scoped = showTransitive ? licenses : licenses.filter(l => l.isDirect)
+  const transitiveHidden = licenses.length - scoped.length
   // 只显示非 low 风险的包
-  const issues = licenses.filter(l => l.risk !== 'low')
-  if (issues.length === 0) return ''
+  const issues = scoped.filter(l => l.risk !== 'low')
+  if (issues.length === 0) {
+    if (transitiveHidden > 0) {
+      return [
+        '## 许可证风险',
+        '',
+        `_直接依赖许可证全部为低风险；隐藏了 ${transitiveHidden} 个子依赖，--deep 查看全部_`,
+      ].join('\n')
+    }
+    return ''
+  }
 
   const lines = [
     '## 许可证风险',
@@ -178,24 +243,43 @@ function renderLicenseSection(licenses: LicenseInfo[]): string {
     )
   }
 
+  if (transitiveHidden > 0) {
+    lines.push('')
+    lines.push(`_隐藏了 ${transitiveHidden} 个子依赖；--deep 查看全部_`)
+  }
   return lines.join('\n')
 }
 
-function renderSecuritySection(report: AnalysisReport): string {
+function renderSecuritySection(
+  report: AnalysisReport,
+  showTransitive: boolean,
+): string {
   const { security } = report
   const skippedCount =
     report.diagnostics?.skipped.filter(s => s.dimension === 'security')
       .length ?? 0
+
   if (skippedCount > 0 && security.length === 0) {
     return `## 安全漏洞\n\n⚠ 安全审计未完整运行，${skippedCount} 项被跳过`
   }
   if (security.length === 0) return ''
 
-  const withVulns = security.filter(s => s.totalVulnerabilities > 0)
+  const allVulns = security.filter(s => s.totalVulnerabilities > 0)
+  const directVulns = allVulns.filter(s => s.isDirect !== false)
+  const withVulns = showTransitive ? allVulns : directVulns
+  const transitiveHidden = allVulns.length - withVulns.length
   if (withVulns.length === 0) {
-    return skippedCount > 0
-      ? `## 安全漏洞\n\n⚠ 未发现已知漏洞，但 ${skippedCount} 项审计结果被跳过`
-      : ''
+    if (skippedCount > 0) {
+      return `## 安全漏洞\n\n⚠ 未发现已知漏洞，但 ${skippedCount} 项审计结果被跳过`
+    }
+    if (transitiveHidden > 0) {
+      return [
+        '## 安全漏洞',
+        '',
+        `_未发现直接依赖漏洞；隐藏了 ${transitiveHidden} 个子依赖漏洞（已归并到优化建议），--deep 查看全部_`,
+      ].join('\n')
+    }
+    return ''
   }
 
   const lines = [
@@ -223,6 +307,12 @@ function renderSecuritySection(report: AnalysisReport): string {
     )
   }
 
+  if (transitiveHidden > 0) {
+    lines.push('')
+    lines.push(
+      `_隐藏了 ${transitiveHidden} 个子依赖漏洞（已归并到优化建议）；--deep 查看全部_`,
+    )
+  }
   return lines.join('\n')
 }
 
