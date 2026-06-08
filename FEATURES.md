@@ -23,7 +23,7 @@
 - `--verbose` — 详细日志模式（映射到 consola 的 trace 等级）
 - `--silent` — 静默模式（关闭所有输出）
 - `--registry <url>` — 自定义 npm registry
-- `--concurrency <n>` — 并发请求数（默认 5，建议 1-20）
+- `--concurrency <n>` — 并发请求数（默认 5，必须是 1-20 之间的整数）
 - `--offline` — 离线模式，跳过所有网络请求（也可通过 `OFFLINE=1` 环境变量启用）
 
 **Verbose 模式：**
@@ -305,18 +305,29 @@ export default defineConfig({
 **流程：**
 
 1. 加载配置（cosmiconfig）→ 读 package.json → 检测包管理器
-2. 构建 DependencyInventory（从 lockfile / node_modules）
+2. 构建 DependencyInventory（从 lockfile / node_modules），默认只保留生产根依赖及其可达传递依赖
 3. 源码可达性分析 + 依赖分类
-4. **并行**跑四个 analyzer（bundle + health + license + security）
-5. 依赖卫生检测 + 多版本检测 + 优化建议生成
-6. 默认模式过滤：只保留 actionable findings
-7. 渲染报告 + 决定退出码
+4. 默认模式选取直接依赖作为 analyzer 目标；`--deep` 使用完整 lock entries
+5. **并行**跑四个 analyzer（bundle + health + license + security）
+6. 依赖卫生检测 + 多版本检测 + 优化建议生成
+7. 默认模式过滤：只保留 actionable findings
+8. 汇总 diagnostics（skipped / warnings）+ 渲染报告 + 决定退出码
 
 **模式：**
 
-- **默认模式**：快速扫描，只输出可操作建议，隐藏低价值 transitive findings
+- **默认模式**：快速扫描直接依赖，只输出可操作建议；transitive 信息保留在 inventory 中作为证据
+- **`--include-dev`**：将 `devDependencies` 及其可达传递依赖纳入清单和分析目标
 - **`--deep` 模式**：完整 lock 文件扫描，等同原 optimize 行为
 - **`--ci` 模式**：只对 direct prod critical/high 漏洞和高风险许可证冲突返回非零
+
+**数据完整性：** 报告包含 `diagnostics.partial`、`diagnostics.skipped` 和 `diagnostics.warnings`。当 audit、网络数据源或构建产物分析失败，或用户通过 `--skip-health` / `--skip-license` / `--skip-security` 显式跳过维度时，报告会明确标记为部分结果，而不是展示为“未发现问题”。
+
+**输入校验：**
+
+- `--format` 仅接受命令声明的枚举值，非法值返回退出码 1
+- `--scope` 仅接受 `runtime` / `all` / `non-runtime`
+- `--concurrency` 和 `config.concurrency` 必须是 1-20 之间的整数
+- `--all-workspaces` 当前仅支持 terminal 输出；JSON/HTML/Markdown 聚合报告尚未实现，且不支持 `--output`，避免多个 workspace 覆盖同一个文件或拼出不可解析 JSON
 
 **退出码规则：**
 
@@ -341,7 +352,7 @@ export default defineConfig({
 - 是否可移除/移动/升级
 - 操作命令建议（如 `pnpm remove X`）
 
-**流程：** 跑完整 inventory + reachability + classification pipeline → 筛选目标包 → 输出单包报告。
+**流程：** 跑完整 inventory + reachability + classification pipeline → 筛选目标包 → 输出单包报告。默认只解释生产依赖和传递依赖；传入 `--include-dev` 后才纳入 `devDependencies`，避免日常排查时被测试/构建工具噪声干扰。
 
 ### 5.3 `doctor` 命令 (`src/commands/doctor.ts`)
 
@@ -369,7 +380,7 @@ export default defineConfig({
 **CLI 选项（scan）：**
 
 - `--workspace <name>`：分析指定子包（按 name 或 path 匹配）
-- `--all-workspaces`：逐个分析所有子包，退出码取最严重的
+- `--all-workspaces`：逐个分析所有子包，退出码取最严重的；当前仅支持 terminal 输出，不生成聚合 JSON/HTML/Markdown
 
 **实现：** `src/utils/workspace.ts` — `detectWorkspaces()` 检测并展开 glob 模式，`findWorkspace()` 按名称/路径查找。
 
@@ -439,7 +450,8 @@ dep-radar scan --since main
 基于 **cosmiconfig**，支持多种配置文件格式：
 
 - `dep-radar.config.ts` / `.js` / `.cjs` / `.mjs` / `.json`
-- `.deprdarrc` / `.deprdarrc.json` / `.deprdarrc.yaml` / `.deprdarrc.yml`
+- `.dep-radarrc` / `.dep-radarrc.json` / `.dep-radarrc.yaml` / `.dep-radarrc.yml`
+- `.deprdarrc*` 旧拼写兼容
 - `package.json` 的 `"dep-radar"` 字段
 
 找不到配置文件时返回空对象（不报错），解析失败时抛 `ConfigError`。
@@ -454,10 +466,10 @@ interface DepRadarConfig {
   }
   ignore?: string[] // 忽略的包，支持 glob 模式
   replacements?: Record<string, ReplacementRule> // 自定义替代方案
-  dataSource?: Array<'pkg-size' | 'bundlephobia' | 'local'> // 数据源优先级
+  dataSource?: Array<'pkg-size' | 'bundlephobia' | 'local'> // 数据源优先级；local 为保留实验入口，当前会被跳过并提示
   registry?: string // 自定义 npm registry
   cacheTTL?: number // 缓存 TTL（秒），默认 3600
-  concurrency?: number // 并发请求数，默认 5
+  concurrency?: number // 并发请求数，默认 5，必须是 1-20 之间的整数
   bundlephobiaRecord?: boolean // 是否向 Bundlephobia 写入记录，默认 false
   healthWeights?: {
     // 自定义健康度评分权重

@@ -70,7 +70,7 @@ dep-radar doctor
 
 ### 方式一：JSON（推荐大多数用户）
 
-在项目根目录创建 `.deprdarrc.json`：
+在项目根目录创建 `.dep-radarrc.json`：
 
 ```json
 {
@@ -83,7 +83,7 @@ dep-radar doctor
 }
 ```
 
-也支持 `package.json` 中的 `"dep-radar"` 字段、`.deprdarrc.yaml`、`.deprdarrc.js`、`dep-radar.config.js` 等格式，由 [cosmiconfig](https://github.com/cosmiconfig/cosmiconfig) 自动发现。
+也支持 `package.json` 中的 `"dep-radar"` 字段、`.dep-radarrc.yaml`、`.dep-radarrc.js`、`dep-radar.config.js` 等格式，由 [cosmiconfig](https://github.com/cosmiconfig/cosmiconfig) 自动发现。旧拼写 `.deprdarrc.*` 仍兼容，但建议迁移到 `.dep-radarrc.*`。
 
 ### 方式二：TypeScript（需要类型提示时）
 
@@ -106,19 +106,19 @@ export default defineConfig({
 
 ### 配置项说明
 
-| 字段                 | 类型                              | 默认值                         | 说明                                         |
-| -------------------- | --------------------------------- | ------------------------------ | -------------------------------------------- |
-| `budget`             | `object`                          | -                              | 体积预算，CI 中超出则退出码 3                |
-| `budget.totalGzip`   | `number`                          | -                              | 项目总 gzip 体积上限（字节）                 |
-| `budget.perPackage`  | `Record<string, number>`          | -                              | 单包体积上限，`{ "moment": 0 }` 表示禁止使用 |
-| `ignore`             | `string[]`                        | `[]`                           | 忽略的包，支持 glob 模式                     |
-| `replacements`       | `Record<string, ReplacementRule>` | 内置表                         | 自定义替代方案，同名覆盖内置规则             |
-| `dataSource`         | `string[]`                        | `['pkg-size', 'bundlephobia']` | 数据源优先级，`'local'` 启用本地 esbuild     |
-| `registry`           | `string`                          | -                              | 自定义 npm registry URL                      |
-| `cacheTTL`           | `number`                          | `3600`                         | 缓存 TTL（秒）                               |
-| `concurrency`        | `number`                          | `5`                            | 并发请求数，建议范围 1-20                    |
-| `bundlephobiaRecord` | `boolean`                         | `false`                        | 是否向 Bundlephobia 写入查询记录             |
-| `healthWeights`      | `object`                          | 各维度默认权重之和 100         | 自定义健康度评分权重（见下文）               |
+| 字段                 | 类型                              | 默认值                         | 说明                                                       |
+| -------------------- | --------------------------------- | ------------------------------ | ---------------------------------------------------------- |
+| `budget`             | `object`                          | -                              | 体积预算，CI 中超出则退出码 3                              |
+| `budget.totalGzip`   | `number`                          | -                              | 项目总 gzip 体积上限（字节）                               |
+| `budget.perPackage`  | `Record<string, number>`          | -                              | 单包体积上限，`{ "moment": 0 }` 表示禁止使用               |
+| `ignore`             | `string[]`                        | `[]`                           | 忽略的包，支持 glob 模式                                   |
+| `replacements`       | `Record<string, ReplacementRule>` | 内置表                         | 自定义替代方案，同名覆盖内置规则                           |
+| `dataSource`         | `string[]`                        | `['pkg-size', 'bundlephobia']` | 数据源优先级；`'local'` 目前保留为实验入口，会被跳过并提示 |
+| `registry`           | `string`                          | -                              | 自定义 npm registry URL                                    |
+| `cacheTTL`           | `number`                          | `3600`                         | 缓存 TTL（秒）                                             |
+| `concurrency`        | `number`                          | `5`                            | 并发请求数，必须是 1-20 之间的整数                         |
+| `bundlephobiaRecord` | `boolean`                         | `false`                        | 是否向 Bundlephobia 写入查询记录                           |
+| `healthWeights`      | `object`                          | 各维度默认权重之和 100         | 自定义健康度评分权重（见下文）                             |
 
 #### healthWeights 子字段
 
@@ -162,33 +162,35 @@ export GITHUB_TOKEN="ghp_xxx"
 
 ### `scan`（日常依赖审查与优化建议）
 
-替代原 `analyze` + `optimize` + `report`，统一为一个命令。默认只输出可操作建议。
+替代原 `analyze` + `optimize` + `report`，统一为一个命令。默认分析直接依赖并只输出可操作建议；完整 lock/transitive 视图使用 `--deep`。
 
-| 选项                 | 说明                                                   |
-| -------------------- | ------------------------------------------------------ |
-| `--ci`               | CI 模式：只对高优先级问题返回非零退出码                |
-| `--deep`             | 深度模式：完整 lock 文件扫描（更慢但更全面）           |
-| `--format <type>`    | `terminal`（默认） / `json` / `html` / `markdown`      |
-| `--output <path>`    | 写入文件                                               |
-| `--include-dev`      | 同时分析 `devDependencies`                             |
-| `--skip-health`      | 跳过健康度维度（避免 GitHub API 调用，速度更快）       |
-| `--skip-license`     | 跳过许可证维度                                         |
-| `--skip-security`    | 跳过安全审计维度                                       |
-| `--scope <scope>`    | 体积分析范围：`runtime`（默认）/ `all` / `non-runtime` |
-| `--stats <file>`     | webpack stats.json 路径（真实 bundle 分析）            |
-| `--assets-dir <dir>` | 构建输出目录（计算实际 gzip）                          |
-| `--since <ref>`      | 增量分析：只分析相对于指定 git ref 变更的依赖          |
-| `--workspace <name>` | 分析指定工作区子包                                     |
-| `--all-workspaces`   | 分析所有工作区子包并汇总                               |
+| 选项                 | 说明                                                                 |
+| -------------------- | -------------------------------------------------------------------- |
+| `--ci`               | CI 模式：只对高优先级问题返回非零退出码                              |
+| `--deep`             | 深度模式：完整 lock 文件扫描（更慢但更全面）                         |
+| `--format <type>`    | `terminal`（默认） / `json` / `html` / `markdown`                    |
+| `--output <path>`    | 写入文件                                                             |
+| `--include-dev`      | 同时分析 `devDependencies` 及其可达传递依赖                          |
+| `--skip-health`      | 跳过健康度维度（避免 GitHub API 调用，速度更快）                     |
+| `--skip-license`     | 跳过许可证维度                                                       |
+| `--skip-security`    | 跳过安全审计维度                                                     |
+| `--scope <scope>`    | 体积分析范围：`runtime`（默认）/ `all` / `non-runtime`               |
+| `--stats <file>`     | webpack stats.json 路径（真实 bundle 分析）                          |
+| `--assets-dir <dir>` | 构建输出目录（计算实际 gzip）                                        |
+| `--since <ref>`      | 增量分析：只分析相对于指定 git ref 变更的依赖                        |
+| `--workspace <name>` | 分析指定工作区子包                                                   |
+| `--all-workspaces`   | 分析所有工作区子包；当前仅支持 terminal 输出，不支持 `--output` 聚合 |
+
+默认清单只包含生产根依赖及其可达传递依赖；需要把开发依赖树也纳入时使用 `--include-dev`。`--format` 仅接受表格中的枚举值，`--scope` 仅接受 `runtime|all|non-runtime`，`--concurrency` 必须是 1-20 之间的整数；非法值会返回退出码 1。`--format json` 的 stdout 只输出 JSON，日志和进度信息输出到 stderr，便于 CI 或脚本直接解析。报告中的 `diagnostics` 字段会标记网络、audit、构建产物以及显式 `--skip-*` 维度的跳过项，避免把“未完整检查”误读成“没有问题”。
 
 ### `explain`（解释单个依赖）
 
-| 选项              | 说明                        |
-| ----------------- | --------------------------- |
-| `<package>`       | 要解释的包名（必填）        |
-| `[path]`          | 项目路径（默认 `.`）        |
-| `--format <type>` | `terminal`（默认） / `json` |
-| `--include-dev`   | 同时分析 `devDependencies`  |
+| 选项              | 说明                                                   |
+| ----------------- | ------------------------------------------------------ |
+| `<package>`       | 要解释的包名（必填）                                   |
+| `[path]`          | 项目路径（默认 `.`）                                   |
+| `--format <type>` | `terminal`（默认） / `json`                            |
+| `--include-dev`   | 同时解释 `devDependencies`；默认只查生产依赖和传递依赖 |
 
 ### `doctor`（项目健康检查）
 
@@ -201,15 +203,15 @@ export GITHUB_TOKEN="ghp_xxx"
 
 ### 全局选项
 
-| 选项                | 说明                            |
-| ------------------- | ------------------------------- |
-| `--verbose`         | 详细日志                        |
-| `--silent`          | 静默模式                        |
-| `--no-cache`        | 禁用缓存                        |
-| `--cache-dir`       | 自定义缓存目录                  |
-| `--registry`        | 自定义 npm registry             |
-| `--concurrency <n>` | 并发请求数（默认 5，建议 1-20） |
-| `--offline`         | 离线模式，跳过所有网络请求      |
+| 选项                | 说明                                         |
+| ------------------- | -------------------------------------------- |
+| `--verbose`         | 详细日志                                     |
+| `--silent`          | 静默模式                                     |
+| `--no-cache`        | 禁用缓存                                     |
+| `--cache-dir`       | 自定义缓存目录                               |
+| `--registry`        | 自定义 npm registry                          |
+| `--concurrency <n>` | 并发请求数（默认 5，必须是 1-20 之间的整数） |
+| `--offline`         | 离线模式，跳过所有网络请求                   |
 
 ### CI 集成的退出码
 

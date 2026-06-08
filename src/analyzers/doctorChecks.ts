@@ -370,7 +370,7 @@ function checkDocConsistency(
   }
 
   try {
-    const readme = readFileSync(readmePath, 'utf-8').toLowerCase()
+    const readme = getReadmeIntroSignals(readFileSync(readmePath, 'utf-8'))
     const allDeps = {
       ...pkg.dependencies,
       ...pkg.devDependencies,
@@ -378,19 +378,23 @@ function checkDocConsistency(
 
     // 检查 README 提到的框架是否与实际依赖一致
     const frameworkChecks: Array<{
-      keyword: string
+      pattern: RegExp
       dep: string
       name: string
     }> = [
-      { keyword: 'react native', dep: 'react-native', name: 'React Native' },
-      { keyword: 'expo', dep: 'expo', name: 'Expo' },
-      { keyword: 'next.js', dep: 'next', name: 'Next.js' },
-      { keyword: 'nextjs', dep: 'next', name: 'Next.js' },
-      { keyword: 'vite', dep: 'vite', name: 'Vite' },
+      {
+        pattern: /\breact\s+native\b/,
+        dep: 'react-native',
+        name: 'React Native',
+      },
+      { pattern: /\bexpo\b/, dep: 'expo', name: 'Expo' },
+      { pattern: /\bnext\.js\b/, dep: 'next', name: 'Next.js' },
+      { pattern: /\bnextjs\b/, dep: 'next', name: 'Next.js' },
+      { pattern: /\bvite\b/, dep: 'vite', name: 'Vite' },
     ]
 
     for (const check of frameworkChecks) {
-      const mentionedInReadme = readme.includes(check.keyword)
+      const mentionedInReadme = check.pattern.test(readme)
       const hasDep = allDeps[check.dep] !== undefined
 
       if (mentionedInReadme && !hasDep) {
@@ -418,4 +422,12 @@ function checkDocConsistency(
       message: '无法读取 README.md',
     }
   }
+}
+
+function getReadmeIntroSignals(content: string): string {
+  return content
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`]*`/g, ' ')
+    .toLowerCase()
+    .slice(0, 2000)
 }

@@ -55,6 +55,7 @@ export function renderTerminalReport(
   const sections = [
     renderHeader(report),
     renderSummary(report),
+    renderDiagnostics(report),
     report.dimensions.optimize ? renderRecommendedActions(report) : '',
     report.dimensions.size
       ? renderBundleSection(report.bundles, verbose, maxItems)
@@ -66,7 +67,13 @@ export function renderTerminalReport(
       ? renderLicenseSection(report.licenses, verbose, maxItems)
       : '',
     report.dimensions.security
-      ? renderSecuritySection(report.security, verbose, maxItems)
+      ? renderSecuritySection(
+          report.security,
+          verbose,
+          maxItems,
+          report.diagnostics?.skipped.filter(s => s.dimension === 'security')
+            .length ?? 0,
+        )
       : '',
     report.dimensions.optimize
       ? renderOptimizationSection(
@@ -78,6 +85,39 @@ export function renderTerminalReport(
       : '',
   ]
   return sections.filter(Boolean).join('\n\n') + '\n'
+}
+
+function renderDiagnostics(report: AnalysisReport): string {
+  const diagnostics = report.diagnostics
+  if (!diagnostics?.partial) return ''
+
+  const lines = [chalk.bold.underline('数据完整性')]
+  const skippedByDimension = new Map<string, number>()
+  for (const item of diagnostics.skipped) {
+    skippedByDimension.set(
+      item.dimension,
+      (skippedByDimension.get(item.dimension) ?? 0) + 1,
+    )
+  }
+
+  if (diagnostics.warnings.length > 0) {
+    for (const warning of diagnostics.warnings.slice(0, 5)) {
+      lines.push(`  ${chalk.yellow('!')} ${warning}`)
+    }
+    if (diagnostics.warnings.length > 5) {
+      lines.push(
+        chalk.gray(`  ... 还有 ${diagnostics.warnings.length - 5} 条警告`),
+      )
+    }
+  }
+
+  for (const [dimension, count] of skippedByDimension) {
+    lines.push(
+      `  ${chalk.yellow('!')} ${dimension} 有 ${count} 项未覆盖，结论为部分结果`,
+    )
+  }
+
+  return lines.join('\n')
 }
 
 // =====================================================================
@@ -388,7 +428,16 @@ function renderSecuritySection(
   security: SecurityInfo[],
   verbose: boolean,
   maxItems: number,
+  skippedCount = 0,
 ): string {
+  if (skippedCount > 0 && security.length === 0) {
+    return (
+      chalk.bold.underline('安全审计') +
+      '\n' +
+      chalk.yellow(`  ! 安全审计未完整运行，${skippedCount} 项被跳过`)
+    )
+  }
+
   if (security.length === 0) {
     return (
       chalk.bold.underline('安全审计') +
@@ -410,6 +459,9 @@ function renderSecuritySection(
   const hidden = vuln.length - shown.length
 
   const lines: string[] = [chalk.bold.underline('安全审计')]
+  if (skippedCount > 0) {
+    lines.push(chalk.yellow(`  ! ${skippedCount} 项安全审计结果被跳过`))
+  }
   for (const s of shown) {
     const sevColor =
       s.highestSeverity === 'critical'

@@ -18,7 +18,6 @@ import type {
   HealthInfo,
   LicenseInfo,
   OptimizationSuggestion,
-  SecurityInfo,
 } from '../types/analysis.js'
 import {
   formatBytes,
@@ -198,13 +197,39 @@ function renderBody(report: AnalysisReport): string {
   <div class="wrap">
     ${renderHeader(report)}
     ${renderSummaryCards(report)}
+    ${renderDiagnostics(report)}
     ${report.dimensions.size ? renderBundleSection(report.bundles) : ''}
     ${report.dimensions.optimize ? renderOptimizationSection(report.optimizations) : ''}
     ${report.dimensions.health ? renderHealthSection(report.health) : ''}
     ${report.dimensions.license ? renderLicenseSection(report.licenses) : ''}
-    ${report.dimensions.security ? renderSecuritySection(report.security) : ''}
+    ${report.dimensions.security ? renderSecuritySection(report) : ''}
     ${renderFooter()}
   </div>`
+}
+
+function renderDiagnostics(report: AnalysisReport): string {
+  const diagnostics = report.diagnostics
+  if (!diagnostics?.partial) return ''
+
+  const warnings = diagnostics.warnings
+    .slice(0, 10)
+    .map(w => `<li>${escapeHtml(w)}</li>`)
+    .join('')
+  const skippedByDimension = new Map<string, number>()
+  for (const item of diagnostics.skipped) {
+    skippedByDimension.set(
+      item.dimension,
+      (skippedByDimension.get(item.dimension) ?? 0) + 1,
+    )
+  }
+  const skipped = [...skippedByDimension.entries()]
+    .map(
+      ([dimension, count]) =>
+        `<li>${escapeHtml(dimension)} 有 ${count} 项未覆盖，结论为部分结果</li>`,
+    )
+    .join('')
+
+  return `<h2>数据完整性</h2><div class="card"><ul>${warnings}${skipped}</ul></div>`
 }
 
 function renderHeader(report: AnalysisReport): string {
@@ -439,12 +464,22 @@ function renderLicenseSection(licenses: LicenseInfo[]): string {
   </div>`
 }
 
-function renderSecuritySection(security: SecurityInfo[]): string {
+function renderSecuritySection(report: AnalysisReport): string {
+  const { security } = report
+  const skippedCount =
+    report.diagnostics?.skipped.filter(s => s.dimension === 'security')
+      .length ?? 0
+  if (skippedCount > 0 && security.length === 0) {
+    return `<h2>安全审计</h2><div class="card"><span class="badge yellow">!</span> 安全审计未完整运行，${skippedCount} 项被跳过</div>`
+  }
   if (security.length === 0) {
     return `<h2>安全审计</h2><div class="card"><span class="badge green">✓</span> 未发现已知漏洞</div>`
   }
   const vuln = security.filter(s => s.totalVulnerabilities > 0)
   if (vuln.length === 0) {
+    if (skippedCount > 0) {
+      return `<h2>安全审计</h2><div class="card"><span class="badge yellow">!</span> 未发现已知漏洞，但 ${skippedCount} 项审计结果被跳过</div>`
+    }
     return `<h2>安全审计</h2><div class="card"><span class="badge green">✓</span> 未发现已知漏洞</div>`
   }
   const items = vuln
@@ -462,7 +497,10 @@ function renderSecuritySection(security: SecurityInfo[]): string {
     </div>`,
     )
     .join('')
-  return `<h2>安全审计</h2>${items}`
+  const skipped = skippedCount
+    ? `<div class="card"><span class="badge yellow">!</span> ${skippedCount} 项安全审计结果被跳过</div>`
+    : ''
+  return `<h2>安全审计</h2>${skipped}${items}`
 }
 
 function renderFooter(): string {

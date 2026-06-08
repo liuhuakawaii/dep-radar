@@ -16,7 +16,7 @@
  *
  * Workspace 选项（scan）：
  *   --workspace <name>   分析指定工作区子包
- *   --all-workspaces     分析所有工作区子包并汇总
+ *   --all-workspaces     分析所有工作区子包（当前仅 terminal 输出）
  */
 
 import { resolve } from 'node:path'
@@ -25,6 +25,16 @@ import { Command } from 'commander'
 
 import { doctorCommand } from './commands/doctor.js'
 import { explainCommand } from './commands/explain.js'
+import {
+  isScanReportFormat,
+  isScanScope,
+  isSimpleReportFormat,
+  listChoices,
+  SCAN_REPORT_FORMATS,
+  SCAN_SCOPES,
+  SIMPLE_REPORT_FORMATS,
+  validateConcurrency,
+} from './commands/options.js'
 import { scanCommand } from './commands/scan.js'
 import { setOfflineMode } from './data/http.js'
 import { DepRadarError } from './errors/index.js'
@@ -92,6 +102,13 @@ program
     const opts = thisCommand.opts()
     if (opts.silent) setLogLevel('silent')
     else if (opts.verbose) setLogLevel('verbose')
+    if (opts.concurrency != null) {
+      const concurrency = Number(opts.concurrency)
+      if (validateConcurrency(concurrency) == null) {
+        logger.error('并发请求数必须是 1-20 之间的整数')
+        process.exit(EXIT_CODES.ERROR)
+      }
+    }
     if (opts.offline) {
       setOfflineMode(true)
       logger.info('已启用离线模式，所有网络请求将被跳过')
@@ -124,15 +141,30 @@ program
   .option('--assets-dir <dir>', '构建输出目录')
   .option('--since <ref>', '增量分析：只分析相对于指定 git ref 变更的依赖')
   .option('--workspace <name>', '分析指定工作区子包')
-  .option('--all-workspaces', '分析所有工作区子包并汇总', false)
+  .option(
+    '--all-workspaces',
+    '分析所有工作区子包（当前仅 terminal 输出）',
+    false,
+  )
   .action(async (path: string, options: Record<string, unknown>) => {
     const globals = program.opts()
+    const format = options.json ? 'json' : options.format
+    if (!isScanReportFormat(format)) {
+      logger.error(
+        `不支持的输出格式 "${String(format)}"，可选值：${listChoices(SCAN_REPORT_FORMATS)}`,
+      )
+      process.exit(EXIT_CODES.ERROR)
+    }
+    if (!isScanScope(options.scope)) {
+      logger.error(
+        `不支持的体积分析范围 "${String(options.scope)}"，可选值：${listChoices(SCAN_SCOPES)}`,
+      )
+      process.exit(EXIT_CODES.ERROR)
+    }
+    const parsedConcurrency =
+      globals.concurrency != null ? Number(globals.concurrency) : undefined
     const baseOpts = {
-      format: (options.json ? 'json' : options.format) as
-        | 'terminal'
-        | 'json'
-        | 'html'
-        | 'markdown',
+      format,
       output: options.output as string | undefined,
       ci: Boolean(options.ci),
       deep: Boolean(options.deep),
@@ -140,16 +172,29 @@ program
       skipHealth: Boolean(options.skipHealth),
       skipLicense: Boolean(options.skipLicense),
       skipSecurity: Boolean(options.skipSecurity),
-      scope: (options.scope as 'runtime' | 'all' | 'non-runtime') ?? 'runtime',
+      scope: options.scope,
       statsFile: options.stats as string | undefined,
       assetsDir: options.assetsDir as string | undefined,
       cacheEnabled: globals.cache !== false,
       cacheDir: globals.cacheDir as string | undefined,
       registry: globals.registry as string | undefined,
-      concurrency: globals.concurrency
-        ? Number(globals.concurrency)
-        : undefined,
+      concurrency: parsedConcurrency,
       since: options.since as string | undefined,
+    }
+
+    if (options.allWorkspaces) {
+      if (baseOpts.output) {
+        logger.error(
+          '--all-workspaces 暂不支持 --output；请分别扫描单个 workspace，或使用 terminal 输出查看逐包结果',
+        )
+        process.exit(EXIT_CODES.ERROR)
+      }
+      if (baseOpts.format !== 'terminal') {
+        logger.error(
+          '--all-workspaces 暂仅支持 terminal 输出；JSON/HTML/Markdown 聚合报告尚未实现',
+        )
+        process.exit(EXIT_CODES.ERROR)
+      }
     }
 
     const wsPaths = await resolveWorkspacePath(
@@ -182,7 +227,7 @@ program
   .argument('<package>', '要解释的包名')
   .argument('[path]', '项目路径', '.')
   .option('--format <type>', '输出格式: terminal|json', 'terminal')
-  .option('--include-dev', '同时分析 devDependencies', false)
+  .option('--include-dev', '同时解释 devDependencies', false)
   .action(
     async (
       packageName: string,
@@ -190,15 +235,20 @@ program
       options: Record<string, unknown>,
     ) => {
       const globals = program.opts()
+      if (!isSimpleReportFormat(options.format)) {
+        logger.error(
+          `不支持的输出格式 "${String(options.format)}"，可选值：${listChoices(SIMPLE_REPORT_FORMATS)}`,
+        )
+        process.exit(EXIT_CODES.ERROR)
+      }
       const exitCode = await explainCommand(packageName, path, {
-        format: (options.format as 'terminal' | 'json') ?? 'terminal',
+        format: options.format,
         includeDev: Boolean(options.includeDev),
         cacheEnabled: globals.cache !== false,
         cacheDir: globals.cacheDir as string | undefined,
         registry: globals.registry as string | undefined,
-        concurrency: globals.concurrency
-          ? Number(globals.concurrency)
-          : undefined,
+        concurrency:
+          globals.concurrency != null ? Number(globals.concurrency) : undefined,
       })
       process.exit(exitCode)
     },
@@ -214,8 +264,14 @@ program
   .argument('[path]', '项目路径', '.')
   .option('--format <type>', '输出格式: terminal|json', 'terminal')
   .action(async (path: string, options: Record<string, unknown>) => {
+    if (!isSimpleReportFormat(options.format)) {
+      logger.error(
+        `不支持的输出格式 "${String(options.format)}"，可选值：${listChoices(SIMPLE_REPORT_FORMATS)}`,
+      )
+      process.exit(EXIT_CODES.ERROR)
+    }
     const exitCode = await doctorCommand(path, {
-      format: (options.format as 'terminal' | 'json') ?? 'terminal',
+      format: options.format,
     })
     process.exit(exitCode)
   })
@@ -225,12 +281,11 @@ program
 // =====================================================================
 
 async function main(): Promise<void> {
-  const opts = program.opts()
-  const verbose = Boolean(opts.verbose)
-
   try {
     await program.parseAsync(process.argv)
   } catch (err) {
+    const opts = program.opts()
+    const verbose = Boolean(opts.verbose)
     const lines = formatError(err, verbose)
     for (const line of lines) {
       logger.error(line)

@@ -194,57 +194,67 @@ function parseNpmLockPackages(
     if (isDirect) directEntries.set(name, entry)
   }
 
-  // 第三遍：为 transitive 依赖计算最短路径
-  for (const entry of entries) {
-    if (entry.isDirect) continue
-    const path = findShortestPathNpm(
-      entry.name,
-      directEntries,
-      depGraph,
-      nameVersionMap,
-    )
-    if (path.length > 0) entry.paths = [path]
-  }
+  // 第三遍：只保留从当前直接依赖集合可达的 transitive 依赖
+  const reachablePaths = collectReachableNpmPaths(
+    directEntries,
+    depGraph,
+    nameVersionMap,
+  )
+  const reachableEntries = entries.filter(entry => {
+    if (entry.isDirect) return true
+    const path = reachablePaths.get(entry.name)
+    if (!path) return false
+    entry.paths = [path]
+    return true
+  })
 
-  return { entries, resolvedFrom: 'package-lock.json', warnings }
+  return {
+    entries: reachableEntries,
+    resolvedFrom: 'package-lock.json',
+    warnings,
+  }
 }
 
 /**
  * npm lockfile 的最短路径查找（BFS）
  */
-function findShortestPathNpm(
-  targetName: string,
+function collectReachableNpmPaths(
   directEntries: Map<string, DependencyEntry>,
   depGraph: Map<string, Record<string, string>>,
   nameVersionMap: Map<string, string>,
-): string[] {
-  const queue: string[][] = []
-  for (const [name, entry] of directEntries) {
-    queue.push([name, entry.packageName])
+): Map<string, string[]> {
+  const reachable = new Map<string, string[]>()
+  const queue: Array<{ name: string; version: string; path: string[] }> = []
+  for (const entry of directEntries.values()) {
+    queue.push({
+      name: entry.packageName,
+      version: entry.resolvedVersion,
+      path: [entry.name],
+    })
   }
   const visited = new Set<string>()
 
   while (queue.length > 0) {
-    const path = queue.shift()!
-    const currentName = path[path.length - 1]!
-    const currentVersion = nameVersionMap.get(currentName)
-    const graphKey = currentVersion
-      ? `${directEntries.get(currentName)?.packageName ?? currentName}@${currentVersion}`
-      : null
-    if (!graphKey) continue
+    const current = queue.shift()!
+    const graphKey = `${current.name}@${current.version}`
     if (visited.has(graphKey)) continue
     visited.add(graphKey)
 
     const deps = depGraph.get(graphKey)
     if (!deps) continue
     for (const depName of Object.keys(deps)) {
-      if (depName === targetName) return [...path, depName]
-      if (!visited.has(`${depName}@${nameVersionMap.get(depName)}`)) {
-        queue.push([...path, depName])
+      const depVersion = nameVersionMap.get(depName)
+      if (!depVersion) continue
+      const childKey = `${depName}@${depVersion}`
+      const childPath = [...current.path, depName]
+      if (!reachable.has(depName)) reachable.set(depName, childPath)
+      if (!visited.has(childKey)) {
+        queue.push({ name: depName, version: depVersion, path: childPath })
       }
     }
   }
-  return []
+
+  return reachable
 }
 
 /**
@@ -306,6 +316,13 @@ interface PnpmLockfile {
       optional?: boolean
     }
   >
+  snapshots?: Record<
+    string,
+    {
+      dependencies?: Record<string, string>
+      optionalDependencies?: Record<string, string>
+    }
+  >
 }
 
 async function tryPnpmLockfile(
@@ -353,8 +370,12 @@ function parsePnpmLockfile(
   // 构建依赖图：packageName@version → 其依赖列表
   const depGraph = new Map<string, Record<string, string>>()
   const packageVersions = new Map<string, string>()
-  if (lockfile.packages) {
-    for (const [pkgId, manifest] of Object.entries(lockfile.packages)) {
+  const packageRecords = {
+    ...(lockfile.packages ?? {}),
+    ...(lockfile.snapshots ?? {}),
+  }
+  if (Object.keys(packageRecords).length > 0) {
+    for (const [pkgId, manifest] of Object.entries(packageRecords)) {
       const parsed = parsePnpmPackageKey(pkgId)
       if (!parsed) continue
 
@@ -376,7 +397,7 @@ function parsePnpmLockfile(
   // 处理直接依赖
   const directEntries = new Map<string, DependencyEntry>()
   for (const [name, depInfo] of Object.entries(allDirect)) {
-    const version = resolvePnpmVersion(depInfo.version, name, lockfile.packages)
+    const version = resolvePnpmVersion(depInfo.version, name, packageRecords)
     if (!version) {
       warnings.push(`pnpm: 无法解析 ${name} 的版本`)
       continue
@@ -408,19 +429,18 @@ function parsePnpmLockfile(
 
   // 收集 transitive 依赖并构建依赖路径
   const directNames = new Set(entries.map(e => e.packageName))
-  if (lockfile.packages) {
-    for (const [pkgId] of Object.entries(lockfile.packages)) {
+  const reachablePaths = collectReachablePnpmPaths(directEntries, depGraph)
+  const seenTransitive = new Set<string>()
+  if (Object.keys(packageRecords).length > 0) {
+    for (const [pkgId] of Object.entries(packageRecords)) {
       const parsed = parsePnpmPackageKey(pkgId)
       if (!parsed) continue
       if (directNames.has(parsed.name)) continue
-
-      // 构建依赖路径：从直接依赖到此 transitive 包的最短路径
-      const depPath = findShortestPath(
-        parsed.name,
-        parsed.version,
-        directEntries,
-        depGraph,
-      )
+      const entryKey = `${parsed.name}@${parsed.version}`
+      if (seenTransitive.has(entryKey)) continue
+      const depPath = reachablePaths.get(parsed.name)
+      if (!depPath) continue
+      seenTransitive.add(entryKey)
 
       entries.push({
         name: parsed.name,
@@ -432,7 +452,7 @@ function parsePnpmLockfile(
         isAlias: false,
         resolvedFrom: 'pnpm-lock.yaml',
         confidence: 'high',
-        paths: depPath.length > 0 ? [depPath] : [[parsed.name]],
+        paths: [depPath],
       })
     }
   }
@@ -441,56 +461,46 @@ function parsePnpmLockfile(
 }
 
 /**
- * 查找从直接依赖到目标包的最短依赖路径
+ * 查找从直接依赖集合可达的 pnpm 依赖路径
  *
- * BFS 遍历依赖图，返回路径如 ['react', 'loose-envify', 'js-tokens']
+ * BFS 遍历依赖图，返回每个 transitive 包的最短路径。
  */
-function findShortestPath(
-  targetName: string,
-  _targetVersion: string,
+function collectReachablePnpmPaths(
   directEntries: Map<string, DependencyEntry>,
   depGraph: Map<string, Record<string, string>>,
-): string[] {
-  // BFS: queue = [当前路径]
-  const queue: string[][] = []
-
-  // 从所有直接依赖开始
-  for (const [name, entry] of directEntries) {
-    queue.push([name, entry.packageName])
+): Map<string, string[]> {
+  const reachable = new Map<string, string[]>()
+  const queue: Array<{ name: string; version: string; path: string[] }> = []
+  for (const entry of directEntries.values()) {
+    queue.push({
+      name: entry.packageName,
+      version: entry.resolvedVersion,
+      path: [entry.name],
+    })
   }
-
   const visited = new Set<string>()
 
   while (queue.length > 0) {
-    const path = queue.shift()!
-    const currentName = path[path.length - 1]!
-    const currentEntry = directEntries.get(currentName)
-    const currentVersion = currentEntry?.resolvedVersion
-    const graphKey = currentVersion
-      ? `${currentEntry!.packageName}@${currentVersion}`
-      : null
-
-    if (!graphKey) continue
+    const current = queue.shift()!
+    const graphKey = `${current.name}@${current.version}`
     if (visited.has(graphKey)) continue
     visited.add(graphKey)
 
     const deps = depGraph.get(graphKey)
     if (!deps) continue
-
     for (const [depName, depVersionRef] of Object.entries(deps)) {
       const depVersion = resolvePnpmVersion(depVersionRef, depName, undefined)
-      if (depName === targetName) {
-        return [...path, depName]
-      }
-      // 继续搜索
+      if (!depVersion) continue
       const childKey = `${depName}@${depVersion}`
+      const childPath = [...current.path, depName]
+      if (!reachable.has(depName)) reachable.set(depName, childPath)
       if (!visited.has(childKey)) {
-        queue.push([...path, depName])
+        queue.push({ name: depName, version: depVersion, path: childPath })
       }
     }
   }
 
-  return []
+  return reachable
 }
 
 /**

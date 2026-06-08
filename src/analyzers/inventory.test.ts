@@ -2,7 +2,11 @@
  * DependencyInventory 构建器测试
  */
 
-import { describe, expect, it } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { PackageJson } from '../types/package.js'
 
@@ -26,6 +30,16 @@ function minimalPkg(overrides: Partial<PackageJson> = {}): PackageJson {
 // =====================================================================
 
 describe('buildInventory', () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'dep-radar-inventory-'))
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+  })
+
   describe('package.json fallback（无 lockfile、无 node_modules）', () => {
     it('从 dependencies 构建直接依赖', async () => {
       // 使用一个不存在的路径，确保没有 lockfile 和 node_modules
@@ -199,6 +213,63 @@ describe('buildInventory', () => {
 
       const inventory = await buildInventory('/nonexistent', pkg)
       expect(inventory.resolvedFrom).toBe('package-json-fallback')
+    })
+  })
+
+  describe('pnpm lockfile (pnpm-lock.yaml)', () => {
+    it('includeDev=false 时不应把 dev 根依赖当作 transitive 收集', async () => {
+      const pkg = minimalPkg({
+        dependencies: { react: '^18.0.0' },
+        devDependencies: { vitest: '^2.0.0' },
+      })
+      writeFileSync(
+        join(dir, 'pnpm-lock.yaml'),
+        [
+          "lockfileVersion: '9.0'",
+          'importers:',
+          '  .:',
+          '    dependencies:',
+          '      react:',
+          '        specifier: ^18.0.0',
+          '        version: 18.3.1',
+          '    devDependencies:',
+          '      vitest:',
+          '        specifier: ^2.0.0',
+          '        version: 2.1.9',
+          'packages:',
+          '  /react@18.3.1: {}',
+          '  /loose-envify@1.4.0: {}',
+          '  /vitest@2.1.9: {}',
+          '  /vite@5.4.0: {}',
+          'snapshots:',
+          '  react@18.3.1:',
+          '    dependencies:',
+          '      loose-envify: 1.4.0',
+          '  vitest@2.1.9:',
+          '    dependencies:',
+          '      vite: 5.4.0',
+          '  loose-envify@1.4.0: {}',
+          '  vite@5.4.0: {}',
+          '',
+        ].join('\n'),
+        'utf-8',
+      )
+
+      const withoutDev = await buildInventory(dir, pkg)
+      expect(withoutDev.entries.map(e => e.name).sort()).toEqual([
+        'loose-envify',
+        'react',
+      ])
+      expect(withoutDev.entries.find(e => e.name === 'vitest')).toBeUndefined()
+      expect(withoutDev.entries.find(e => e.name === 'vite')).toBeUndefined()
+
+      const withDev = await buildInventory(dir, pkg, { includeDev: true })
+      expect(withDev.entries.map(e => e.name)).toEqual(
+        expect.arrayContaining(['react', 'loose-envify', 'vitest', 'vite']),
+      )
+      expect(withDev.entries.find(e => e.name === 'vitest')!.declaredIn).toBe(
+        'devDependencies',
+      )
     })
   })
 

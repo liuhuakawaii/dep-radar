@@ -16,6 +16,12 @@ import type { DependencyEntry } from '../types/inventory.js'
 import type { ReachabilityResult } from '../analyzers/reachability.js'
 import { EXIT_CODES, type ExitCode } from '../utils/exitCode.js'
 import { logger } from '../utils/logger.js'
+import {
+  isSimpleReportFormat,
+  listChoices,
+  SIMPLE_REPORT_FORMATS,
+  type SimpleReportFormat,
+} from './options.js'
 import { loadSetup } from './shared.js'
 
 // =====================================================================
@@ -23,7 +29,7 @@ import { loadSetup } from './shared.js'
 // =====================================================================
 
 export interface ExplainOptions {
-  format?: 'terminal' | 'json'
+  format?: SimpleReportFormat
   includeDev?: boolean
   cacheEnabled?: boolean
   cacheDir?: string
@@ -40,7 +46,14 @@ export async function explainCommand(
   projectPath: string,
   options: ExplainOptions = {},
 ): Promise<ExitCode> {
-  const { format = 'terminal' } = options
+  const { format: rawFormat = 'terminal', includeDev = false } = options
+  if (!isSimpleReportFormat(rawFormat)) {
+    logger.error(
+      `不支持的输出格式 "${String(rawFormat)}"，可选值：${listChoices(SIMPLE_REPORT_FORMATS)}`,
+    )
+    return EXIT_CODES.ERROR
+  }
+  const format = rawFormat
 
   // 1. Setup
   const setup = await loadSetup(projectPath)
@@ -51,7 +64,7 @@ export async function explainCommand(
   let inventory
   try {
     inventory = await buildInventory(projectPath, pkg, {
-      includeDev: true, // explain 总是包含 devDeps
+      includeDev,
       ignore: config.ignore,
     })
   } catch (err) {
@@ -84,7 +97,10 @@ export async function explainCommand(
 
   if (!entry) {
     logger.error(`未找到依赖 "${packageName}"`)
-    logger.info('请检查包名是否正确，或使用 --include-dev 包含开发依赖')
+    const hint = includeDev
+      ? '请检查包名是否正确'
+      : '请检查包名是否正确，或使用 --include-dev 包含开发依赖'
+    logger.info(hint)
     return EXIT_CODES.ERROR
   }
 

@@ -3,7 +3,8 @@
  *
  * 基于 cosmiconfig，支持多种位置/格式：
  * - `dep-radar.config.ts` / `.js` / `.cjs` / `.mjs` / `.json`
- * - `.deprdarrc` / `.deprdarrc.json` / `.deprdarrc.yaml` / `.deprdarrc.yml`
+ * - `.dep-radarrc` / `.dep-radarrc.json` / `.dep-radarrc.yaml` / `.dep-radarrc.yml`
+ * - `.deprdarrc*` 旧拼写兼容
  * - `package.json` 中的 `"dep-radar"` 字段
  *
  * 解析失败时抛 ConfigError，让 CLI 顶层捕获并友好提示。
@@ -31,6 +32,12 @@ export async function loadUserConfig(cwd: string): Promise<DepRadarConfig> {
       `.${MODULE_NAME}rc.yml`,
       `.${MODULE_NAME}rc.js`,
       `.${MODULE_NAME}rc.cjs`,
+      '.deprdarrc',
+      '.deprdarrc.json',
+      '.deprdarrc.yaml',
+      '.deprdarrc.yml',
+      '.deprdarrc.js',
+      '.deprdarrc.cjs',
       `${MODULE_NAME}.config.js`,
       `${MODULE_NAME}.config.cjs`,
       `${MODULE_NAME}.config.mjs`,

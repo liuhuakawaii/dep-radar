@@ -62,9 +62,7 @@ export function buildBundleFetcher(
   const sourceMap = buildSources(options.cache, options.bundlephobiaRecord)
   for (const s of sources) {
     if (s === 'local') {
-      logger.warn(
-        `数据源 "local" 暂未实现（将在 Phase 3 接入本地 esbuild），跳过`,
-      )
+      logger.warn(`数据源 "local" 暂未实现，已跳过`)
       continue
     }
     fetchers.push({ name: s, fn: sourceMap[s] })

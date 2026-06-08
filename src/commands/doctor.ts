@@ -19,13 +19,19 @@ import { PackageNotFoundError } from '../errors/index.js'
 import { EXIT_CODES, type ExitCode } from '../utils/exitCode.js'
 import { readPackageJson } from '../utils/fs.js'
 import { logger } from '../utils/logger.js'
+import {
+  isSimpleReportFormat,
+  listChoices,
+  SIMPLE_REPORT_FORMATS,
+  type SimpleReportFormat,
+} from './options.js'
 
 // =====================================================================
 // 公开类型
 // =====================================================================
 
 export interface DoctorOptions {
-  format?: 'terminal' | 'json'
+  format?: SimpleReportFormat
 }
 
 export interface DoctorResult {
@@ -47,7 +53,14 @@ export async function doctorCommand(
   projectPath: string,
   options: DoctorOptions = {},
 ): Promise<ExitCode> {
-  const { format = 'terminal' } = options
+  const { format: rawFormat = 'terminal' } = options
+  if (!isSimpleReportFormat(rawFormat)) {
+    logger.error(
+      `不支持的输出格式 "${String(rawFormat)}"，可选值：${listChoices(SIMPLE_REPORT_FORMATS)}`,
+    )
+    return EXIT_CODES.ERROR
+  }
+  const format = rawFormat
 
   // 1. 读 package.json
   let pkg

@@ -67,14 +67,24 @@ describe('explainCommand', () => {
     }
   })
 
-  it('devDependency 应显示 declaredIn=devDependencies', async () => {
+  it('默认不包含 devDependency', async () => {
+    writePkg({}, { vitest: '^1.0.0' })
+
+    const code = await explainCommand('vitest', dir, { format: 'json' })
+    expect(code).toBe(EXIT_CODES.ERROR)
+  })
+
+  it('--include-dev 时 devDependency 应显示 declaredIn=devDependencies', async () => {
     writePkg({}, { vitest: '^1.0.0' })
 
     const writeSpy = vi
       .spyOn(process.stdout, 'write')
       .mockImplementation(() => true)
     try {
-      const code = await explainCommand('vitest', dir, { format: 'json' })
+      const code = await explainCommand('vitest', dir, {
+        format: 'json',
+        includeDev: true,
+      })
       expect(code).toBe(EXIT_CODES.OK)
 
       const output = writeSpy.mock.calls.map(c => String(c[0])).join('')
@@ -83,6 +93,12 @@ describe('explainCommand', () => {
     } finally {
       writeSpy.mockRestore()
     }
+  })
+
+  it('非法 format 应返回 ERROR', async () => {
+    writePkg({ react: '^18.0.0' })
+    const code = await explainCommand('react', dir, { format: 'yaml' as never })
+    expect(code).toBe(EXIT_CODES.ERROR)
   })
 
   it('terminal 格式应输出到 stdout', async () => {

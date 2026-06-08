@@ -114,6 +114,28 @@ describe('scanCommand', () => {
     })
   }
 
+  function writePnpmLockWithTransitive() {
+    writeFileSync(
+      join(dir, 'pnpm-lock.yaml'),
+      [
+        "lockfileVersion: '9.0'",
+        'importers:',
+        '  .:',
+        '    dependencies:',
+        '      direct-a:',
+        '        specifier: ^1.0.0',
+        '        version: 1.0.0',
+        'packages:',
+        '  /direct-a@1.0.0:',
+        '    dependencies:',
+        '      transitive-a: 1.0.0',
+        '  /transitive-a@1.0.0: {}',
+        '',
+      ].join('\n'),
+      'utf-8',
+    )
+  }
+
   // -----------------------------------------------------------------
   // 基础
   // -----------------------------------------------------------------
@@ -174,6 +196,55 @@ describe('scanCommand', () => {
     const out = JSON.parse(readFileSync(outFile, 'utf-8'))
     expect(out.hygieneIssues).toBeDefined()
     expect(out.duplicateVersions).toBeDefined()
+  })
+
+  it('默认模式只分析直接依赖，transitive 仅保留在 inventory 证据中', async () => {
+    writePkg({ 'direct-a': '^1.0.0' })
+    writePnpmLockWithTransitive()
+    pkgSize.mockResolvedValueOnce(bundleOf('direct-a', 1000))
+
+    const outFile = join(dir, 'r.json')
+    const code = await scanCommand(dir, {
+      format: 'json',
+      output: outFile,
+      skipHealth: true,
+      skipLicense: true,
+      skipSecurity: true,
+      cacheEnabled: false,
+    })
+    expect(code).toBe(EXIT_CODES.OK)
+
+    const out = JSON.parse(readFileSync(outFile, 'utf-8'))
+    expect(out.inventory.entries).toHaveLength(2)
+    expect(out.bundles).toHaveLength(1)
+    expect(out.bundles[0].name).toBe('direct-a')
+    expect(pkgSize).toHaveBeenCalledTimes(1)
+  })
+
+  it('--deep 模式会分析 transitive 依赖', async () => {
+    writePkg({ 'direct-a': '^1.0.0' })
+    writePnpmLockWithTransitive()
+    pkgSize
+      .mockResolvedValueOnce(bundleOf('direct-a', 1000))
+      .mockResolvedValueOnce(bundleOf('transitive-a', 500))
+
+    const outFile = join(dir, 'r.json')
+    const code = await scanCommand(dir, {
+      format: 'json',
+      output: outFile,
+      deep: true,
+      skipHealth: true,
+      skipLicense: true,
+      skipSecurity: true,
+      cacheEnabled: false,
+    })
+    expect(code).toBe(EXIT_CODES.OK)
+
+    const out = JSON.parse(readFileSync(outFile, 'utf-8'))
+    expect(out.bundles.map((bundle: { name: string }) => bundle.name)).toEqual([
+      'direct-a',
+      'transitive-a',
+    ])
   })
 
   // -----------------------------------------------------------------
@@ -244,6 +315,75 @@ describe('scanCommand', () => {
     expect(npmFullDoc).not.toHaveBeenCalled()
     expect(npmDl).not.toHaveBeenCalled()
     expect(npmTrend).not.toHaveBeenCalled()
+  })
+
+  it('显式跳过的维度应写入 diagnostics', async () => {
+    writePkg({ react: '^18.0.0' })
+    pkgSize.mockResolvedValueOnce(bundleOf('react', 3000))
+
+    const outFile = join(dir, 'r.json')
+    const code = await scanCommand(dir, {
+      format: 'json',
+      output: outFile,
+      skipHealth: true,
+      skipLicense: true,
+      skipSecurity: true,
+      cacheEnabled: false,
+    })
+    expect(code).toBe(EXIT_CODES.OK)
+
+    const out = JSON.parse(readFileSync(outFile, 'utf-8'))
+    expect(out.dimensions.health).toBe(false)
+    expect(out.dimensions.license).toBe(false)
+    expect(out.dimensions.security).toBe(false)
+    expect(out.diagnostics.partial).toBe(true)
+    expect(
+      out.diagnostics.skipped.map(
+        (item: { dimension: string }) => item.dimension,
+      ),
+    ).toEqual(expect.arrayContaining(['health', 'license', 'security']))
+  })
+
+  it('非法 format 应返回 ERROR', async () => {
+    writePkg({ react: '^18.0.0' })
+    const code = await scanCommand(dir, {
+      format: 'yaml' as never,
+      output: join(dir, 'r.json'),
+    })
+    expect(code).toBe(EXIT_CODES.ERROR)
+  })
+
+  it('非法 scope 应返回 ERROR', async () => {
+    writePkg({ react: '^18.0.0' })
+    const code = await scanCommand(dir, {
+      format: 'json',
+      scope: 'prod' as never,
+      output: join(dir, 'r.json'),
+    })
+    expect(code).toBe(EXIT_CODES.ERROR)
+  })
+
+  it('非法 concurrency 应返回 ERROR', async () => {
+    writePkg({ react: '^18.0.0' })
+    const code = await scanCommand(dir, {
+      format: 'json',
+      concurrency: 0,
+      output: join(dir, 'r.json'),
+    })
+    expect(code).toBe(EXIT_CODES.ERROR)
+  })
+
+  it('配置中的非法 concurrency 应返回 ERROR', async () => {
+    writePkg({ react: '^18.0.0' })
+    writeFileSync(
+      join(dir, '.dep-radarrc.json'),
+      JSON.stringify({ concurrency: 99 }),
+    )
+    const code = await scanCommand(dir, {
+      format: 'json',
+      output: join(dir, 'r.json'),
+    })
+    expect(code).toBe(EXIT_CODES.ERROR)
   })
 
   it('ignore 配置应过滤包', async () => {

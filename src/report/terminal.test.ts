@@ -213,6 +213,26 @@ describe('renderTerminalReport', () => {
     expect(out1).toContain('未发现已知漏洞')
   })
 
+  it('security 有 skipped 时不应误导为未发现漏洞', () => {
+    const out = renderTerminalReport(
+      emptyReport({
+        diagnostics: {
+          partial: true,
+          skipped: [
+            {
+              dimension: 'security',
+              name: '*',
+              reason: 'audit command failed',
+            },
+          ],
+          warnings: [],
+        },
+      }),
+    )
+    expect(out).toContain('安全审计未完整运行')
+    expect(out).not.toContain('未发现已知漏洞')
+  })
+
   it('optimizations 应按优先级 + 节省量降序', () => {
     const out = renderTerminalReport(
       emptyReport({

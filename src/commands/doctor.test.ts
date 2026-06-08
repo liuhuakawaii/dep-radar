@@ -85,6 +85,12 @@ describe('doctorCommand', () => {
     }
   })
 
+  it('非法 format 应返回 ERROR', async () => {
+    writePkg()
+    const code = await doctorCommand(dir, { format: 'markdown' as never })
+    expect(code).toBe(EXIT_CODES.ERROR)
+  })
+
   it('Expo 项目应检测到框架类型', async () => {
     writePkg({ dependencies: { expo: '~52.0.0', react: '18.3.1' } })
 

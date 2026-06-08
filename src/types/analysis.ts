@@ -243,6 +243,27 @@ export interface AnalysisReport {
     security: boolean
     optimize: boolean
   }
+  /**
+   * 数据完整性与降级信息。
+   *
+   * skipped 表示某个维度没有成功覆盖全部目标，warnings 表示分析过程中
+   * 发生过降级或高噪声提示。报告层必须把它和“没有发现问题”区分开。
+   */
+  diagnostics?: {
+    partial: boolean
+    skipped: Array<{
+      dimension:
+        | 'inventory'
+        | 'size'
+        | 'health'
+        | 'license'
+        | 'security'
+        | 'build-artifacts'
+      name: string
+      reason: string
+    }>
+    warnings: string[]
+  }
   summary: {
     totalDependencies: number
     totalSize: number

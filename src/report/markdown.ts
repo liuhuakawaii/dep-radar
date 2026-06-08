@@ -11,7 +11,6 @@ import type {
   HealthInfo,
   LicenseInfo,
   OptimizationSuggestion,
-  SecurityInfo,
 } from '../types/analysis.js'
 import {
   formatBytes,
@@ -24,15 +23,39 @@ export function renderMarkdownReport(report: AnalysisReport): string {
   const sections = [
     renderHeader(report),
     renderSummary(report),
+    renderDiagnostics(report),
     report.dimensions.size ? renderBundleSection(report.bundles) : '',
     report.dimensions.health ? renderHealthSection(report.health) : '',
     report.dimensions.license ? renderLicenseSection(report.licenses) : '',
-    report.dimensions.security ? renderSecuritySection(report.security) : '',
+    report.dimensions.security ? renderSecuritySection(report) : '',
     report.dimensions.optimize
       ? renderOptimizationSection(report.optimizations)
       : '',
   ]
   return sections.filter(Boolean).join('\n\n') + '\n'
+}
+
+function renderDiagnostics(report: AnalysisReport): string {
+  const diagnostics = report.diagnostics
+  if (!diagnostics?.partial) return ''
+
+  const lines = ['## 数据完整性', '']
+  for (const warning of diagnostics.warnings.slice(0, 10)) {
+    lines.push(`- ⚠ ${warning}`)
+  }
+
+  const skippedByDimension = new Map<string, number>()
+  for (const item of diagnostics.skipped) {
+    skippedByDimension.set(
+      item.dimension,
+      (skippedByDimension.get(item.dimension) ?? 0) + 1,
+    )
+  }
+  for (const [dimension, count] of skippedByDimension) {
+    lines.push(`- ⚠ ${dimension} 有 ${count} 项未覆盖，结论为部分结果`)
+  }
+
+  return lines.join('\n')
 }
 
 function renderHeader(report: AnalysisReport): string {
@@ -158,11 +181,22 @@ function renderLicenseSection(licenses: LicenseInfo[]): string {
   return lines.join('\n')
 }
 
-function renderSecuritySection(security: SecurityInfo[]): string {
+function renderSecuritySection(report: AnalysisReport): string {
+  const { security } = report
+  const skippedCount =
+    report.diagnostics?.skipped.filter(s => s.dimension === 'security')
+      .length ?? 0
+  if (skippedCount > 0 && security.length === 0) {
+    return `## 安全漏洞\n\n⚠ 安全审计未完整运行，${skippedCount} 项被跳过`
+  }
   if (security.length === 0) return ''
 
   const withVulns = security.filter(s => s.totalVulnerabilities > 0)
-  if (withVulns.length === 0) return ''
+  if (withVulns.length === 0) {
+    return skippedCount > 0
+      ? `## 安全漏洞\n\n⚠ 未发现已知漏洞，但 ${skippedCount} 项审计结果被跳过`
+      : ''
+  }
 
   const lines = [
     '## 安全漏洞',
@@ -170,6 +204,9 @@ function renderSecuritySection(security: SecurityInfo[]): string {
     '| 包名 | 类型 | 范围 | 漏洞数 | 最高严重度 | 详情 |',
     '|------|------|------|--------|------------|------|',
   ]
+  if (skippedCount > 0) {
+    lines.splice(2, 0, `> ⚠ ${skippedCount} 项安全审计结果被跳过`, '')
+  }
 
   for (const s of withVulns) {
     const direct = s.isDirect ? 'direct' : 'transitive'

@@ -14,6 +14,8 @@
 import { consola, type ConsolaInstance, type LogLevel } from 'consola'
 
 export const logger: ConsolaInstance = consola.create({
+  stdout: process.stderr,
+  stderr: process.stderr,
   defaults: {
     tag: 'dep-radar',
   },

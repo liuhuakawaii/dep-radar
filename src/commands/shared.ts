@@ -114,6 +114,11 @@ export function makeEmptyReport(
       security: false,
       optimize: false,
     },
+    diagnostics: {
+      partial: false,
+      skipped: [],
+      warnings: [],
+    },
     summary: {
       totalDependencies: 0,
       totalSize: 0,

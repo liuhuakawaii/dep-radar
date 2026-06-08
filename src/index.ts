@@ -7,6 +7,8 @@
 
 import type { DepRadarConfig } from './types/config.js'
 
+declare const __DEP_RADAR_VERSION__: string
+
 /**
  * 公开类型 re-export
  *
@@ -27,7 +29,8 @@ export type {
   OptimizationType,
 } from './types/index.js'
 
-export const VERSION = '0.1.0'
+export const VERSION =
+  typeof __DEP_RADAR_VERSION__ === 'undefined' ? 'dev' : __DEP_RADAR_VERSION__
 
 /**
  * 用户配置文件助手，提供类型推导与字段补全。

@@ -25,7 +25,7 @@ describe('loadUserConfig', () => {
     expect(got).toEqual({})
   })
 
-  it('应解析 .deprdarrc.json', async () => {
+  it('应解析 .dep-radarrc.json', async () => {
     writeFileSync(join(dir, 'package.json'), '{"name":"x","version":"1.0.0"}')
     writeFileSync(
       join(dir, '.dep-radarrc.json'),
@@ -37,6 +37,16 @@ describe('loadUserConfig', () => {
     const got = await loadUserConfig(dir)
     expect(got.budget?.totalGzip).toBe(500_000)
     expect(got.ignore).toEqual(['@internal/*'])
+  })
+
+  it('应兼容旧拼写 .deprdarrc.json', async () => {
+    writeFileSync(join(dir, 'package.json'), '{"name":"x","version":"1.0.0"}')
+    writeFileSync(
+      join(dir, '.deprdarrc.json'),
+      JSON.stringify({ cacheTTL: 1800 }),
+    )
+    const got = await loadUserConfig(dir)
+    expect(got.cacheTTL).toBe(1800)
   })
 
   it('应解析 dep-radar.config.cjs', async () => {

@@ -22,5 +22,8 @@ export default defineConfig([
     dts: true,
     sourcemap: true,
     target: 'node18',
+    define: {
+      __DEP_RADAR_VERSION__: JSON.stringify(pkg.version),
+    },
   },
 ])

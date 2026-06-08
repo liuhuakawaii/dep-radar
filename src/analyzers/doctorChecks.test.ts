@@ -197,4 +197,42 @@ describe('runDoctorChecks', () => {
     const pluginCheck = results.find(r => r.id === 'app-json-plugins')
     expect(pluginCheck).toBeUndefined()
   })
+
+  it('README 中的 export 不应误判为 Expo', async () => {
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({
+        name: 'test',
+        version: '1.0.0',
+        dependencies: {},
+      }),
+    )
+    writeFileSync(
+      join(dir, 'README.md'),
+      '```ts\nexport default defineConfig({})\n```',
+    )
+
+    const results = await runDoctorChecks(dir)
+    const docCheck = results.find(r => r.id === 'doc-consistency')
+    expect(docCheck?.status).toBe('pass')
+  })
+
+  it('README 后文提到工具生态不应触发框架依赖警告', async () => {
+    writeFileSync(
+      join(dir, 'package.json'),
+      JSON.stringify({
+        name: 'test',
+        version: '1.0.0',
+        dependencies: {},
+      }),
+    )
+    writeFileSync(
+      join(dir, 'README.md'),
+      `${'项目简介。'.repeat(800)}\n测试框架与 Vite 生态一致。`,
+    )
+
+    const results = await runDoctorChecks(dir)
+    const docCheck = results.find(r => r.id === 'doc-consistency')
+    expect(docCheck?.status).toBe('pass')
+  })
 })

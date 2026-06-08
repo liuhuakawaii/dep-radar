@@ -58,6 +58,16 @@ import {
 import { buildBundleFetcher } from './buildBundleFetcher.js'
 import { buildHealthFetcher } from './buildHealthFetcher.js'
 import { buildLicenseFetcher } from './buildLicenseFetcher.js'
+import {
+  isScanReportFormat,
+  isScanScope,
+  listChoices,
+  SCAN_REPORT_FORMATS,
+  SCAN_SCOPES,
+  validateConcurrency,
+  type ScanReportFormat,
+  type ScanScope,
+} from './options.js'
 import { createCacheFromGlobals, loadSetup, renderReport } from './shared.js'
 
 // =====================================================================
@@ -66,7 +76,7 @@ import { createCacheFromGlobals, loadSetup, renderReport } from './shared.js'
 
 export interface ScanOptions {
   /** 输出格式；默认 terminal */
-  format?: 'terminal' | 'json' | 'html' | 'markdown'
+  format?: ScanReportFormat
   /** 输出文件 */
   output?: string
   /** CI 模式：只对高优先级问题返回非零退出码 */
@@ -82,7 +92,7 @@ export interface ScanOptions {
   /** 跳过 security 维度 */
   skipSecurity?: boolean
   /** 体积分析范围：runtime（默认）/ all / non-runtime */
-  scope?: 'runtime' | 'all' | 'non-runtime'
+  scope?: ScanScope
   /** webpack stats.json 文件路径 */
   statsFile?: string
   /** 构建输出目录路径 */
@@ -134,6 +144,99 @@ function createContentHash(projectPath: string): string {
   return hash.digest('hex').slice(0, 16)
 }
 
+function createScanCacheKey(input: {
+  contentHash: string
+  options: {
+    deep: boolean
+    includeDev: boolean
+    skipHealth: boolean
+    skipLicense: boolean
+    skipSecurity: boolean
+    scope: 'runtime' | 'all' | 'non-runtime'
+    statsFile?: string
+    assetsDir?: string
+    registry?: string
+    concurrency?: number
+  }
+  config: DepRadarConfig
+}): string {
+  const normalized = JSON.stringify({
+    contentHash: input.contentHash,
+    options: input.options,
+    config: {
+      budget: input.config.budget,
+      ignore: input.config.ignore,
+      replacements: input.config.replacements,
+      dataSource: input.config.dataSource,
+      registry: input.config.registry,
+      cacheTTL: input.config.cacheTTL,
+      concurrency: input.config.concurrency,
+      bundlephobiaRecord: input.config.bundlephobiaRecord,
+      healthWeights: input.config.healthWeights,
+      classification: input.config.classification,
+      buildArtifacts: input.config.buildArtifacts,
+      hygiene: input.config.hygiene,
+    },
+  })
+  const hash = createHash('sha256')
+    .update(normalized)
+    .digest('hex')
+    .slice(0, 16)
+  return `scan-result:${hash}`
+}
+
+function selectEntriesForMode(
+  entries: DependencyInventory['entries'],
+  deep: boolean,
+): DependencyInventory['entries'] {
+  if (deep) return entries
+  return entries.filter(entry => entry.isDirect)
+}
+
+function buildDiagnostics(input: {
+  inventoryWarnings: string[]
+  explicitSkipped: Array<{
+    dimension: 'health' | 'license' | 'security'
+    name: string
+    reason: string
+  }>
+  bundleSkipped: Array<{ name: string; reason: string }>
+  healthSkipped: Array<{ name: string; reason: string }>
+  licenseSkipped: Array<{ name: string; reason: string }>
+  securitySkipped: Array<{ name: string; reason: string }>
+  buildArtifactWarnings: string[]
+}): NonNullable<AnalysisReport['diagnostics']> {
+  const skipped: NonNullable<AnalysisReport['diagnostics']>['skipped'] = [
+    ...input.explicitSkipped,
+    ...input.bundleSkipped.map(item => ({
+      dimension: 'size' as const,
+      ...item,
+    })),
+    ...input.healthSkipped.map(item => ({
+      dimension: 'health' as const,
+      ...item,
+    })),
+    ...input.licenseSkipped.map(item => ({
+      dimension: 'license' as const,
+      ...item,
+    })),
+    ...input.securitySkipped.map(item => ({
+      dimension: 'security' as const,
+      ...item,
+    })),
+  ]
+  const warnings = [
+    ...input.inventoryWarnings.map(w => `[inventory] ${w}`),
+    ...input.buildArtifactWarnings.map(w => `[build-artifacts] ${w}`),
+  ]
+
+  return {
+    partial: skipped.length > 0 || warnings.length > 0,
+    skipped,
+    warnings,
+  }
+}
+
 // =====================================================================
 // 主入口
 // =====================================================================
@@ -143,7 +246,7 @@ export async function scanCommand(
   options: ScanOptions = {},
 ): Promise<ExitCode> {
   const {
-    format = 'terminal',
+    format: rawFormat = 'terminal',
     output,
     ci = false,
     deep = false,
@@ -151,7 +254,7 @@ export async function scanCommand(
     skipHealth = false,
     skipLicense = false,
     skipSecurity = false,
-    scope = 'runtime',
+    scope: rawScope = 'runtime',
     statsFile,
     assetsDir,
     cacheEnabled,
@@ -160,41 +263,30 @@ export async function scanCommand(
     concurrency,
     since,
   } = options
+  if (!isScanReportFormat(rawFormat)) {
+    logger.error(
+      `不支持的输出格式 "${String(rawFormat)}"，可选值：${listChoices(SCAN_REPORT_FORMATS)}`,
+    )
+    return EXIT_CODES.ERROR
+  }
+  if (!isScanScope(rawScope)) {
+    logger.error(
+      `不支持的体积分析范围 "${String(rawScope)}"，可选值：${listChoices(SCAN_SCOPES)}`,
+    )
+    return EXIT_CODES.ERROR
+  }
+  const format = rawFormat
+  const scope = rawScope
+  const normalizedConcurrency = validateConcurrency(concurrency)
+  if (concurrency != null && normalizedConcurrency == null) {
+    logger.error('并发请求数必须是 1-20 之间的整数')
+    return EXIT_CODES.ERROR
+  }
 
   // ============================================================
   // 0. 计时 + scan 级缓存检查
   // ============================================================
   const scanStart = performance.now()
-
-  // scan 级缓存：基于内容哈希（仅非增量模式且缓存显式启用时）
-  if (!since && cacheEnabled !== false && cacheEnabled !== undefined) {
-    const quickCache = createCacheFromGlobals({
-      cacheEnabled,
-      cacheDir,
-    })!
-    const contentHash = createContentHash(projectPath)
-    const cacheKey = `scan-result:${contentHash}:${deep ? 'deep' : 'default'}`
-    const cached = await quickCache.get<{
-      report: AnalysisReport
-      exitCode: ExitCode
-    }>(cacheKey)
-    if (cached) {
-      const elapsed = performance.now() - scanStart
-      const rendered = renderReport(cached.report, format)
-      if (output) {
-        const content = format === 'terminal' ? stripAnsi(rendered) : rendered
-        await writeFile(output, content, 'utf-8')
-        logger.success(`报告已写入 ${output}`)
-      } else {
-        process.stdout.write(rendered)
-      }
-      const cacheStats = quickCache.stats
-      logger.info(
-        `扫描完成（缓存命中，${Math.round(elapsed)}ms，hits=${cacheStats.hits} misses=${cacheStats.misses}）`,
-      )
-      return cached.exitCode
-    }
-  }
 
   // ============================================================
   // 1. Setup
@@ -211,7 +303,53 @@ export async function scanCommand(
   })
 
   const resolvedRegistry = registry ?? config.registry
-  const resolvedConcurrency = concurrency ?? config.concurrency ?? 5
+  const configConcurrency = validateConcurrency(config.concurrency)
+  if (config.concurrency != null && configConcurrency == null) {
+    logger.error('配置项 concurrency 必须是 1-20 之间的整数')
+    return EXIT_CODES.ERROR
+  }
+  const resolvedConcurrency = normalizedConcurrency ?? configConcurrency ?? 5
+  const contentHash = createContentHash(projectPath)
+  const cacheKey = createScanCacheKey({
+    contentHash,
+    options: {
+      deep,
+      includeDev,
+      skipHealth,
+      skipLicense,
+      skipSecurity,
+      scope,
+      statsFile,
+      assetsDir,
+      registry: resolvedRegistry,
+      concurrency: resolvedConcurrency,
+    },
+    config,
+  })
+
+  // scan 级缓存：基于依赖内容、关键选项和配置共同判定
+  if (!since && cache) {
+    const cached = await cache.get<{
+      report: AnalysisReport
+      exitCode: ExitCode
+    }>(cacheKey)
+    if (cached) {
+      const elapsed = performance.now() - scanStart
+      const rendered = renderReport(cached.report, format)
+      if (output) {
+        const content = format === 'terminal' ? stripAnsi(rendered) : rendered
+        await writeFile(output, content, 'utf-8')
+        logger.success(`报告已写入 ${output}`)
+      } else {
+        process.stdout.write(rendered)
+      }
+      const cacheStats = cache.stats
+      logger.info(
+        `扫描完成（缓存命中，${Math.round(elapsed)}ms，hits=${cacheStats.hits} misses=${cacheStats.misses}）`,
+      )
+      return cached.exitCode
+    }
+  }
 
   // ============================================================
   // 2. 构建 DependencyInventory
@@ -281,6 +419,7 @@ export async function scanCommand(
     reachabilityResults,
   })
   inventory.entries = entries
+  const analysisEntries = selectEntriesForMode(entries, deep)
 
   // ============================================================
   // 2.7 并行跑四个 analyzer
@@ -307,7 +446,7 @@ export async function scanCommand(
   let bundles, healthList, licenses, securityResult
   try {
     const bundleP = analyzeBundleSize(
-      entries,
+      analysisEntries,
       buildBundleFetcher({
         dataSource: config.dataSource,
         cache,
@@ -325,7 +464,7 @@ export async function scanCommand(
     const healthP = skipHealth
       ? Promise.resolve({ health: [], skipped: [] })
       : analyzeHealth(
-          entries,
+          analysisEntries,
           buildHealthFetcher({ cache, registry: resolvedRegistry }),
           {
             concurrency: resolvedConcurrency,
@@ -338,7 +477,7 @@ export async function scanCommand(
     const licenseP = skipLicense
       ? Promise.resolve({ licenses: [], projectConflicts: [], skipped: [] })
       : analyzeLicenses(
-          entries,
+          analysisEntries,
           buildLicenseFetcher({
             cache,
             registry: resolvedRegistry,
@@ -377,8 +516,16 @@ export async function scanCommand(
   // ============================================================
   // 2.8 依赖卫生 + 多版本检测
   // ============================================================
-  const hygieneIssues = detectHygieneIssues(entries, reachabilityResults)
-  const duplicateVersions = detectDuplicateVersions(entries)
+  const hygieneIssues = detectHygieneIssues(
+    analysisEntries,
+    reachabilityResults,
+    {
+      ignore: config.hygiene?.ignore,
+      allowDynamic: config.hygiene?.allowDynamic,
+      runtimePackages: config.hygiene?.runtimePackages,
+    },
+  )
+  const duplicateVersions = deep ? detectDuplicateVersions(entries) : []
 
   // ============================================================
   // 2.9 构建产物分析（可选）
@@ -388,6 +535,7 @@ export async function scanCommand(
   let buildArtifactResult:
     | Awaited<ReturnType<typeof analyzeBuildArtifacts>>
     | undefined
+  const buildArtifactWarnings: string[] = []
   if (effectiveStatsFile || effectiveAssetsDir) {
     try {
       buildArtifactResult = await analyzeBuildArtifacts(projectPath, {
@@ -400,9 +548,9 @@ export async function scanCommand(
         )
       }
     } catch (err) {
-      logger.warn(
-        `构建产物分析失败（跳过）：${err instanceof Error ? err.message : String(err)}`,
-      )
+      const message = `构建产物分析失败（跳过）：${err instanceof Error ? err.message : String(err)}`
+      buildArtifactWarnings.push(message)
+      logger.warn(message)
     }
   }
 
@@ -444,6 +592,43 @@ export async function scanCommand(
   for (const e of entries) {
     if (e.usageClass) classified[e.usageClass]++
   }
+  const diagnostics = buildDiagnostics({
+    inventoryWarnings: inventory.warnings,
+    explicitSkipped: [
+      ...(skipHealth
+        ? [
+            {
+              dimension: 'health' as const,
+              name: '*',
+              reason: '用户通过 --skip-health 跳过健康度分析',
+            },
+          ]
+        : []),
+      ...(skipLicense
+        ? [
+            {
+              dimension: 'license' as const,
+              name: '*',
+              reason: '用户通过 --skip-license 跳过许可证分析',
+            },
+          ]
+        : []),
+      ...(skipSecurity
+        ? [
+            {
+              dimension: 'security' as const,
+              name: '*',
+              reason: '用户通过 --skip-security 跳过安全审计',
+            },
+          ]
+        : []),
+    ],
+    bundleSkipped: bundles.skipped,
+    healthSkipped: healthList.skipped,
+    licenseSkipped: licenses.skipped,
+    securitySkipped: securityResult.skipped,
+    buildArtifactWarnings,
+  })
 
   // ============================================================
   // 5. 组装报告
@@ -460,8 +645,9 @@ export async function scanCommand(
       security: !skipSecurity,
       optimize: true,
     },
+    diagnostics,
     summary: {
-      totalDependencies: bundles.bundles.length,
+      totalDependencies: analysisEntries.length,
       totalSize: bundles.totalSize,
       totalGzip: bundles.totalGzip,
       maxDepth: 0,
@@ -508,9 +694,7 @@ export async function scanCommand(
     : decideExitCode(report, config)
 
   // 缓存 scan 结果（仅非增量模式且缓存显式启用时）
-  if (!since && cache && cacheEnabled !== false && cacheEnabled !== undefined) {
-    const contentHash = createContentHash(projectPath)
-    const cacheKey = `scan-result:${contentHash}:${deep ? 'deep' : 'default'}`
+  if (!since && cache) {
     await cache.set(cacheKey, { report, exitCode })
   }
 
